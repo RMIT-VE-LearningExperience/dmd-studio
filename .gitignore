@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Cloud Functions
+functions/node_modules
+
+# Claude Code local settings
+.claude/

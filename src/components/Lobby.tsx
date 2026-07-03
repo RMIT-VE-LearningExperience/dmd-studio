@@ -1,0 +1,214 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getBestUserMedia,
+  getVideoResolutionLabel,
+  listMediaDevices,
+  friendlyMediaError,
+  type MediaDeviceChoice,
+} from "@/lib/media";
+import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
+
+const ROLE_LABEL: Record<ParticipantRole, string> = {
+  host: "Host",
+  guest: "Guest",
+  producer: "Producer",
+};
+
+// Live input-level bar driven by an AnalyserNode, so people can see their
+// mic is actually picking them up before they join.
+function MicMeter({ stream }: { stream: MediaStream | null }) {
+  const [level, setLevel] = useState(0);
+
+  useEffect(() => {
+    if (!stream || stream.getAudioTracks().length === 0) return;
+
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    let frame: number;
+    const tick = () => {
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
+      setLevel(Math.min(1, avg / 128));
+      frame = requestAnimationFrame(tick);
+    };
+    tick();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      source.disconnect();
+      ctx.close();
+    };
+  }, [stream]);
+
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+      <div
+        className="h-full rounded-full bg-emerald-500 transition-[width] duration-75"
+        style={{ width: `${Math.round(level * 100)}%` }}
+      />
+    </div>
+  );
+}
+
+type Props = {
+  role: ParticipantRole;
+  initialName: string;
+  onJoin: (stream: MediaStream, displayName: string) => void;
+};
+
+export default function Lobby({ role, initialName, onJoin }: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [name, setName] = useState(initialName);
+  const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
+  const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
+  const [cameraId, setCameraId] = useState("");
+  const [micId, setMicId] = useState("");
+  const [resolution, setResolution] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+
+  const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string) => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    try {
+      const next = await getBestUserMedia(videoDeviceId, audioDeviceId);
+      setError(null);
+      streamRef.current = next;
+      setStream(next);
+      setResolution(getVideoResolutionLabel(next));
+
+      const devices = await listMediaDevices();
+      setCameras(devices.cameras);
+      setMicrophones(devices.microphones);
+      setCameraId(next.getVideoTracks()[0]?.getSettings().deviceId ?? "");
+      setMicId(next.getAudioTracks()[0]?.getSettings().deviceId ?? "");
+    } catch (err) {
+      setStream(null);
+      setError(friendlyMediaError(err));
+    }
+  }, []);
+
+  const joinedRef = useRef(false);
+
+  useEffect(() => {
+    // acquire() is async and doesn't touch state until after its first await
+    // (the getUserMedia permission prompt), so no synchronous setState occurs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    acquire();
+    return () => {
+      // On join, ownership of the stream transfers to the room — only stop
+      // the camera if the user left the lobby without joining.
+      if (!joinedRef.current) {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [acquire]);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream;
+  }, [stream]);
+
+  const handleJoin = () => {
+    if (!stream || !name.trim()) return;
+    setJoining(true);
+    joinedRef.current = true;
+    onJoin(stream, name.trim());
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-neutral-950 p-6 text-neutral-100">
+      <div className="grid w-full max-w-4xl grid-cols-1 items-center gap-8 lg:grid-cols-[1.5fr_1fr]">
+        <div className="relative aspect-video overflow-hidden rounded-2xl border border-neutral-800 bg-black">
+          <video ref={videoRef} autoPlay muted playsInline className="h-full w-full -scale-x-100 object-contain" />
+          {resolution && (
+            <span className="absolute left-3 top-3 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur">
+              {resolution}
+              <span className="block text-neutral-400">This is how you&rsquo;ll be recorded</span>
+            </span>
+          )}
+          {!stream && !error && (
+            <span className="absolute inset-0 flex items-center justify-center text-sm text-neutral-500">
+              Requesting camera…
+            </span>
+          )}
+          {error && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+              <p className="text-sm text-neutral-300">{error}</p>
+              <button
+                onClick={() => acquire()}
+                className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium hover:border-neutral-500"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-4">
+          <h1 className="text-xl font-semibold">Let&rsquo;s check your devices</h1>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">
+              Your name <span className="text-neutral-600">· joining as {ROLE_LABEL[role]}</span>
+            </span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Camera</span>
+            <select
+              value={cameraId}
+              onChange={(e) => acquire(e.target.value, micId || undefined)}
+              disabled={cameras.length === 0}
+              className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              {cameras.map((c) => (
+                <option key={c.deviceId} value={c.deviceId}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Microphone</span>
+            <select
+              value={micId}
+              onChange={(e) => acquire(cameraId || undefined, e.target.value)}
+              disabled={microphones.length === 0}
+              className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              {microphones.map((m) => (
+                <option key={m.deviceId} value={m.deviceId}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <MicMeter stream={stream} />
+          </label>
+
+          <button
+            onClick={handleJoin}
+            disabled={!stream || !name.trim() || joining}
+            className="mt-2 rounded-full bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {joining ? "Joining…" : "Join studio"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

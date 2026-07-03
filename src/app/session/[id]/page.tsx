@@ -6,7 +6,12 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { signInGuest } from "@/lib/auth";
 import RecordingRoom from "@/components/RecordingRoom";
-import type { Role } from "@/hooks/useWebRTCSession";
+import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
+
+function roleFromParam(param: string | null): ParticipantRole {
+  if (param === "guest" || param === "producer") return param;
+  return "host";
+}
 
 export default function SessionPage({
   params,
@@ -15,7 +20,7 @@ export default function SessionPage({
 }) {
   const { id } = use(params);
   const searchParams = useSearchParams();
-  const role: Role = searchParams.get("role") === "guest" ? "guest" : "host";
+  const role = roleFromParam(searchParams.get("role"));
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -26,7 +31,7 @@ export default function SessionPage({
         setLoading(false);
         return;
       }
-      if (role === "guest") {
+      if (role === "guest" || role === "producer") {
         const guestUser = await signInGuest();
         setUser(guestUser);
       }
@@ -36,16 +41,18 @@ export default function SessionPage({
   }, [role]);
 
   if (loading) {
-    return <p className="p-6 text-gray-500">Loading…</p>;
+    return <p className="p-6 text-neutral-500">Loading…</p>;
   }
 
   if (!user) {
     return (
-      <p className="p-6 text-gray-500">
+      <p className="p-6 text-neutral-500">
         Please sign in from the dashboard to host a session.
       </p>
     );
   }
 
-  return <RecordingRoom sessionId={id} role={role} />;
+  const displayName = user.displayName ?? user.email ?? `Guest ${user.uid.slice(0, 4)}`;
+
+  return <RecordingRoom sessionId={id} role={role} uid={user.uid} displayName={displayName} />;
 }

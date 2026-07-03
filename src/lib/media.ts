@@ -1,0 +1,133 @@
+// `ideal` constraints never throw — the browser just returns the closest
+// resolution the camera actually supports, so asking for 4K here safely
+// degrades to whatever the device can do (720p webcam, etc).
+export async function getBestUserMedia(
+  videoDeviceId?: string,
+  audioDeviceId?: string,
+): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: {
+        ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+        // Without this, some cameras/drivers report a swapped portrait mode
+        // (e.g. 1080x1920) as the "closest" match to the width/height ideals
+        // above — forcing 16:9 keeps the picked mode landscape.
+        aspectRatio: { ideal: 16 / 9 },
+        frameRate: { ideal: 30 },
+      },
+      audio: {
+        ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
+        echoCancellation: true,
+        noiseSuppression: true,
+        channelCount: 2,
+      },
+    });
+  } catch (err) {
+    // Permission errors must surface to the user; only constraint problems
+    // (an `exact` deviceId that vanished, a rejected constraint combo) should
+    // fall back to unconstrained access.
+    if (err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
+      throw err;
+    }
+    return navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  }
+}
+
+export type MediaDeviceChoice = {
+  deviceId: string;
+  label: string;
+};
+
+// Only meaningful after getUserMedia has been granted once — before that,
+// browsers return devices with empty labels.
+export async function listMediaDevices(): Promise<{
+  cameras: MediaDeviceChoice[];
+  microphones: MediaDeviceChoice[];
+}> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const toChoice = (d: MediaDeviceInfo, fallback: string): MediaDeviceChoice => ({
+    deviceId: d.deviceId,
+    label: d.label || fallback,
+  });
+  return {
+    cameras: devices.filter((d) => d.kind === "videoinput").map((d, i) => toChoice(d, `Camera ${i + 1}`)),
+    microphones: devices.filter((d) => d.kind === "audioinput").map((d, i) => toChoice(d, `Microphone ${i + 1}`)),
+  };
+}
+
+export function friendlyMediaError(err: unknown): string {
+  if (err instanceof DOMException) {
+    switch (err.name) {
+      case "NotAllowedError":
+      case "SecurityError":
+        return "Camera and microphone access was blocked. Click the camera icon in your browser's address bar to allow access, then try again.";
+      case "NotFoundError":
+        return "No camera or microphone was found. Plug one in (or enable it) and try again.";
+      case "NotReadableError":
+        return "Your camera or microphone is already in use by another app. Close it (Zoom, Teams, etc.) and try again.";
+      case "OverconstrainedError":
+        return "The selected camera or microphone is no longer available. Pick a different device.";
+    }
+  }
+  return err instanceof Error ? err.message : "Could not access your camera or microphone.";
+}
+
+function resolutionTierLabel(width: number, height: number): string | null {
+  const pixels = width * height;
+  if (pixels >= 3840 * 2160 * 0.9) return "4K";
+  if (pixels >= 2560 * 1440 * 0.9) return "1440p";
+  if (pixels >= 1920 * 1080 * 0.9) return "1080p";
+  if (pixels >= 1280 * 720 * 0.9) return "720p";
+  return null;
+}
+
+export function getVideoResolutionLabel(stream: MediaStream): string {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return "No camera";
+  const { width, height, frameRate } = track.getSettings();
+  if (!width || !height) return "Unknown resolution";
+  const tier = resolutionTierLabel(width, height);
+  const fps = frameRate ? ` · ${Math.round(frameRate)}fps` : "";
+  return `${width}×${height}${tier ? ` (${tier})` : ""}${fps}`;
+}
+
+export type RecorderOptions = {
+  mimeType: string;
+  videoBitsPerSecond: number;
+  audioBitsPerSecond: number;
+  extension: string;
+};
+
+const MIME_CANDIDATES = [
+  { mimeType: "video/mp4;codecs=avc1.640028,mp4a.40.2", extension: "mp4" },
+  { mimeType: "video/mp4", extension: "mp4" },
+  { mimeType: "video/webm;codecs=vp9,opus", extension: "webm" },
+  { mimeType: "video/webm;codecs=vp8,opus", extension: "webm" },
+  { mimeType: "video/webm", extension: "webm" },
+];
+
+// Scales the encode bitrate ceiling with resolution so 4K actually gets
+// recorded at meaningfully higher quality than a 720p webcam, rather than
+// MediaRecorder's low default bitrate flattening everything to mush.
+export function pickRecorderOptions(videoWidth: number, videoHeight: number): RecorderOptions {
+  const match =
+    MIME_CANDIDATES.find(
+      (c) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c.mimeType),
+    ) ?? { mimeType: "video/webm", extension: "webm" };
+
+  const pixels = videoWidth * videoHeight;
+  const videoBitsPerSecond =
+    pixels >= 3840 * 2160 * 0.9
+      ? 40_000_000
+      : pixels >= 2560 * 1440 * 0.9
+        ? 16_000_000
+        : pixels >= 1920 * 1080 * 0.9
+          ? 8_000_000
+          : pixels >= 1280 * 720 * 0.9
+            ? 5_000_000
+            : 2_500_000;
+
+  return { ...match, videoBitsPerSecond, audioBitsPerSecond: 192_000 };
+}

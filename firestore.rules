@@ -3,17 +3,51 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /sessions/{sessionId} {
+      // The session owner — used to gate destructive operations.
+      function isSessionHost() {
+        return request.auth != null
+          && get(/databases/$(database)/documents/sessions/$(sessionId)).data.hostUid == request.auth.uid;
+      }
+
       // Host creates the session; anyone with the link can read/join it
-      // (guests are unauthenticated apart from anonymous auth).
+      // (guests/producers are unauthenticated apart from anonymous auth).
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.resource.data.hostUid == request.auth.uid;
       allow update: if request.auth != null;
+      allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
 
-      match /offerCandidates/{candidateId} {
-        allow read, create: if request.auth != null;
+      match /participants/{uid} {
+        // Presence doc per participant, keyed by their auth uid — drives the
+        // WebRTC mesh (who to connect to) and each side can only write its own.
+        // The host may delete any of them when tearing down a project.
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == uid;
+        allow delete: if isSessionHost();
       }
-      match /answerCandidates/{candidateId} {
-        allow read, create: if request.auth != null;
+
+      match /connections/{pairId} {
+        // Per-pair signaling doc for the mesh; pairId has no bearing on auth,
+        // any signed-in session participant may read/write it.
+        allow read, write: if request.auth != null;
+
+        match /offerCandidates/{candidateId} {
+          allow read, create: if request.auth != null;
+        }
+        match /answerCandidates/{candidateId} {
+          allow read, create: if request.auth != null;
+        }
+      }
+
+      match /recordings/{recId} {
+        // Written once a participant's chunk uploads are confirmed complete.
+        // Doc IDs are `{uid}_take{n}` so each take is its own record; only
+        // the participant who owns the uid prefix may write it, and only the
+        // session host (or the owner) may delete it.
+        allow read: if request.auth != null;
+        allow create, update: if request.auth != null
+          && recId.matches(request.auth.uid + '_take[0-9]+');
+        allow delete: if isSessionHost()
+          || (request.auth != null && recId.matches(request.auth.uid + '_take[0-9]+'));
       }
     }
   }
