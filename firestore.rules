@@ -1,0 +1,20 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /sessions/{sessionId} {
+      // Host creates the session; anyone with the link can read/join it
+      // (guests are unauthenticated apart from anonymous auth).
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.hostUid == request.auth.uid;
+      allow update: if request.auth != null;
+
+      match /offerCandidates/{candidateId} {
+        allow read, create: if request.auth != null;
+      }
+      match /answerCandidates/{candidateId} {
+        allow read, create: if request.auth != null;
+      }
+    }
+  }
+}
