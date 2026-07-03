@@ -1,0 +1,45 @@
+# Firebase App Hosting configuration.
+# https://firebase.google.com/docs/app-hosting/configure
+runConfig:
+  # Scale to zero when idle so an unused deploy costs nothing, and cap
+  # scaling for this small app to stay well within the project budget.
+  minInstances: 0
+  maxInstances: 2
+  cpu: 1
+  memoryMiB: 512
+
+# These NEXT_PUBLIC_* values are the Firebase web SDK config. They are shipped
+# to the browser by design and are not secrets (access is gated by Firestore
+# and Storage security rules), so they live here in plaintext rather than in
+# Secret Manager. They must be present at BUILD time for Next.js to inline them.
+env:
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    value: AIzaSyA1ael1VIzbSeXX7Sq9DFrJgrzpFhtv1wY
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: dmd-studio.firebaseapp.com
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: dmd-studio
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: dmd-studio-recordings
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    value: "110358418484"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: 1:110358418484:web:613e2ae080143584dca661
+    availability:
+      - BUILD
+      - RUNTIME
