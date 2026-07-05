@@ -18,10 +18,9 @@ export async function deleteRecording(
   await deleteDoc(doc(db, "sessions", sessionId, "recordings", docId ?? `${uid}_take${take}`));
 }
 
-// Deletes a whole project: all recordings (files + docs), the signaling
-// subcollections, then the session doc itself. ICE-candidate docs nested
-// under connections are left behind — they're a few hundred bytes of
-// unreachable garbage, not worth the recursive sweep client-side.
+// Deletes a whole project: all recordings (files + docs), episodes, chat,
+// the signaling subcollections (including nested ICE-candidate docs), then
+// the session doc itself.
 export async function deleteProject(sessionId: string) {
   const recordings = await getDocs(collection(db, "sessions", sessionId, "recordings"));
   for (const snap of recordings.docs) {
@@ -35,6 +34,16 @@ export async function deleteProject(sessionId: string) {
   const episodesFolder = storageRef(storage, `recordings/${sessionId}/episodes`);
   const episodeListing = await listAll(episodesFolder);
   await Promise.all(episodeListing.items.map((item) => deleteObject(item)));
+
+  // ICE candidates nest under each connection doc and must go first —
+  // deleting the parent doc alone would strand them forever.
+  const connections = await getDocs(collection(db, "sessions", sessionId, "connections"));
+  for (const conn of connections.docs) {
+    for (const sub of ["offerCandidates", "answerCandidates"]) {
+      const candidates = await getDocs(collection(conn.ref, sub));
+      await Promise.all(candidates.docs.map((d) => deleteDoc(d.ref)));
+    }
+  }
 
   for (const sub of ["participants", "connections", "episodes", "chat"]) {
     const snap = await getDocs(collection(db, "sessions", sessionId, sub));

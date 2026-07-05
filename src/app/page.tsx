@@ -25,6 +25,7 @@ type Project = {
   title: string;
   createdAt: Timestamp | null;
   recordingCount: number;
+  live: boolean;
 };
 
 function formatDate(ts: Timestamp | null) {
@@ -56,6 +57,7 @@ export default function Home() {
             title: (data.title as string) || "Untitled",
             createdAt: (data.createdAt as Timestamp) ?? null,
             recordingCount: countSnap.data().count,
+            live: data.status === "live",
           };
         }),
       );
@@ -173,6 +175,12 @@ export default function Home() {
                 </div>
                 <div className="flex items-end justify-between gap-2 p-4">
                   <div className="flex flex-col gap-0.5">
+                    {project.live && (
+                      <span className="flex w-fit items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                        LIVE
+                      </span>
+                    )}
                     {renamingId === project.id ? (
                       <input
                         autoFocus

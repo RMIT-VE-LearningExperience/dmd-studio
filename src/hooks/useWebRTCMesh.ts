@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
   serverTimestamp,
   setDoc,
@@ -47,6 +49,18 @@ function pairId(a: string, b: string) {
   return [a, b].sort().join("_");
 }
 
+// Best-effort teardown of one signaling doc and its ICE-candidate
+// subcollections. Both ends attempt it on leave; whoever runs second finds
+// nothing left, which is fine.
+async function deleteConnectionDoc(sessionId: string, connId: string) {
+  const connRef = doc(db, "sessions", sessionId, "connections", connId);
+  for (const sub of ["offerCandidates", "answerCandidates"]) {
+    const snap = await getDocs(collection(connRef, sub));
+    await Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {})));
+  }
+  await deleteDoc(connRef).catch(() => {});
+}
+
 // Full-mesh WebRTC: every participant connects directly to every other
 // participant. Reasonable up to ~4-5 people; a larger session would need an
 // SFU instead, deliberately out of scope here to keep infra cost near zero.
@@ -65,6 +79,9 @@ export function useWebRTCMesh(
   const localStreamRef = useRef<MediaStream | null>(null);
   const localScreenStreamRef = useRef<MediaStream | null>(null);
   const localShareIdRef = useRef<string | null>(null);
+  // Every signaling doc this client participated in, swept on leave so the
+  // connections subcollection doesn't accumulate dead offer/answer docs.
+  const signalingDocsRef = useRef<Set<string>>(new Set());
 
   const disconnectFromPeer = useCallback((remoteUid: string) => {
     peerConnectionsRef.current[remoteUid]?.close();
@@ -113,6 +130,7 @@ export function useWebRTCMesh(
         );
       };
 
+      signalingDocsRef.current.add(pairId(localUid, remoteUid));
       const connRef = doc(db, "sessions", sessionId, "connections", pairId(localUid, remoteUid));
       const offerCandidates = collection(connRef, "offerCandidates");
       const answerCandidates = collection(connRef, "answerCandidates");
@@ -208,6 +226,7 @@ export function useWebRTCMesh(
       screenSendPcsRef.current[viewerUid] = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
+      signalingDocsRef.current.add(`screen_${localUid}_${viewerUid}_${shareId}`);
       const connRef = doc(
         db,
         "sessions",
@@ -282,6 +301,7 @@ export function useWebRTCMesh(
         );
       };
 
+      signalingDocsRef.current.add(`screen_${sharerUid}_${localUid}_${shareId}`);
       const connRef = doc(
         db,
         "sessions",
@@ -424,6 +444,12 @@ export function useWebRTCMesh(
     Object.keys(peerConnectionsRef.current).forEach(disconnectFromPeer);
     Object.keys(screenRecvPcsRef.current).forEach(disconnectScreen);
     unsubscribersRef.current.__participants?.();
+
+    // Best-effort, not awaited: dead signaling docs are garbage, not state —
+    // leaving must not block on cleaning them up.
+    const staleDocs = [...signalingDocsRef.current];
+    signalingDocsRef.current.clear();
+    void Promise.all(staleDocs.map((id) => deleteConnectionDoc(sessionId, id))).catch(() => {});
   }, [sessionId, localUid, disconnectFromPeer, disconnectScreen, closeAllScreenSends]);
 
   useEffect(() => {

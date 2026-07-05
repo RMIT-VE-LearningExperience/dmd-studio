@@ -102,12 +102,14 @@ function VideoTile({
   mirrored,
   label,
   badge,
+  actions,
 }: {
   stream: MediaStream | null;
   muted: boolean;
   mirrored?: boolean;
   label: string;
   badge?: string;
+  actions?: React.ReactNode;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -132,6 +134,7 @@ function VideoTile({
           {badge}
         </span>
       )}
+      {actions && <div className="absolute left-3 top-3 flex gap-1.5">{actions}</div>}
       {!stream && (
         <span className="absolute inset-0 flex items-center justify-center text-sm text-neutral-600">
           Waiting…
@@ -484,6 +487,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [recordingFlag, setRecordingFlag] = useState<RecordingFlag | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
+  const [removed, setRemoved] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSeenCount, setChatSeenCount] = useState(0);
   const startedTakeRef = useRef(0);
@@ -658,6 +663,12 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     if (role === "host") {
       await join(stream, chosenName);
       setJoined(true);
+      // Drives the "Live" badge on the dashboard.
+      void setDoc(
+        doc(db, "sessions", sessionId),
+        { status: "live", lastLiveAt: serverTimestamp() },
+        { merge: true },
+      ).catch(() => {});
       return;
     }
     // Guests and producers knock first and wait for the host to let them in.
@@ -710,7 +721,66 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     localStreamRef.current = null;
     setLocalStream(null);
     setAdmission(null);
+    setRemoved(false);
   };
+
+  // Host moderation: request-mute (participant can unmute themselves) and
+  // remove (flips admission to denied — the mesh drops them and they can't
+  // rejoin without knocking again).
+  const requestMute = (peerUid: string) => {
+    void updateDoc(doc(db, "sessions", sessionId, "participants", peerUid), {
+      muteRequested: serverTimestamp(),
+    }).catch(() => {});
+  };
+
+  const removeParticipant = (peerUid: string, peerName: string) => {
+    const sure = window.confirm(
+      `Remove ${peerName} from the studio? They'll need to be admitted again to rejoin.`,
+    );
+    if (!sure) return;
+    void updateDoc(doc(db, "sessions", sessionId, "participants", peerUid), {
+      admission: "denied",
+      active: false,
+    }).catch(() => {});
+  };
+
+  // Participant side of moderation: watch our own doc for a mute request or
+  // a removal while we're in the room.
+  useEffect(() => {
+    if (!joined || role === "host") return;
+    let removedHandled = false;
+    const unsub = onSnapshot(doc(db, "sessions", sessionId, "participants", uid), (snap) => {
+      const data = snap.data();
+      if (!data) return;
+      if (data.muteRequested) {
+        localStreamRef.current?.getAudioTracks().forEach((t) => {
+          t.enabled = false;
+        });
+        setMicOn(false);
+        setNotice("The host muted your microphone — you can unmute yourself anytime.");
+        void setDoc(snap.ref, { muteRequested: null }, { merge: true }).catch(() => {});
+      }
+      // Removal forces the same teardown as Leave, minus the confirm.
+      if (data.admission === "denied" && !removedHandled) {
+        removedHandled = true;
+        void stopAndUpload();
+        void stopScreenRec();
+        void leave();
+        localStreamRef.current?.getTracks().forEach((track) => track.stop());
+        setRemoved(true);
+        setJoined(false);
+        setAdmission("denied");
+      }
+    });
+    return unsub;
+  }, [joined, role, sessionId, uid, stopAndUpload, stopScreenRec, leave]);
+
+  // Notices self-dismiss.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const toggleRecording = async () => {
     const sessionRef = doc(db, "sessions", sessionId);
@@ -768,6 +838,11 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     await leave();
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     setJoined(false);
+    if (role === "host") {
+      void setDoc(doc(db, "sessions", sessionId), { status: "ended" }, { merge: true }).catch(
+        () => {},
+      );
+    }
   };
 
   const uploadPercent =
@@ -798,7 +873,11 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   if (admission === "denied") {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-neutral-950 p-6 text-neutral-100">
-        <p className="text-sm text-neutral-300">The host didn&rsquo;t let you into this studio.</p>
+        <p className="text-sm text-neutral-300">
+          {removed
+            ? "The host removed you from this studio."
+            : "The host didn’t let you into this studio."}
+        </p>
         <button
           onClick={cancelKnock}
           className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
@@ -845,6 +924,11 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           onSend={sendChat}
           onClose={() => setChatOpen(false)}
         />
+      )}
+      {notice && (
+        <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full border border-neutral-700 bg-neutral-900/95 px-4 py-2 text-xs font-medium text-neutral-200 shadow-lg backdrop-blur">
+          {notice}
+        </div>
       )}
       {inCountdown && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
@@ -908,6 +992,26 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             muted={false}
             label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
             badge={CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState}
+            actions={
+              canModerate ? (
+                <>
+                  <button
+                    onClick={() => requestMute(peer.uid)}
+                    title="Mute their microphone"
+                    className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
+                  >
+                    Mute
+                  </button>
+                  <button
+                    onClick={() => removeParticipant(peer.uid, peer.displayName)}
+                    title="Remove from studio"
+                    className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-red-300 backdrop-blur transition hover:bg-black/80"
+                  >
+                    Remove
+                  </button>
+                </>
+              ) : undefined
+            }
           />
         ))}
 
