@@ -26,6 +26,7 @@ type ParticipantData = {
   role: ParticipantRole;
   displayName: string;
   active?: boolean;
+  admission?: "pending" | "admitted" | "denied";
 };
 
 // Deterministic per-pair ID so both sides agree on one signaling doc, and on
@@ -172,12 +173,18 @@ export function useWebRTCMesh(
     async (stream: MediaStream, displayName: string) => {
       localStreamRef.current = stream;
 
-      await setDoc(doc(db, "sessions", sessionId, "participants", localUid), {
-        role,
-        displayName,
-        joinedAt: serverTimestamp(),
-        active: true,
-      });
+      // merge: the doc may already carry admission state (waiting room) and
+      // upload progress — joining must not wipe them.
+      await setDoc(
+        doc(db, "sessions", sessionId, "participants", localUid),
+        {
+          role,
+          displayName,
+          joinedAt: serverTimestamp(),
+          active: true,
+        },
+        { merge: true },
+      );
 
       const participantsRef = collection(db, "sessions", sessionId, "participants");
       const unsub = onSnapshot(participantsRef, (snap) => {
@@ -186,7 +193,10 @@ export function useWebRTCMesh(
           if (uid === localUid) return;
           const data = change.doc.data() as ParticipantData;
 
-          if (change.type === "removed" || data.active === false) {
+          // Guests/producers must be admitted by the host before the mesh
+          // will talk to them (the host's own doc carries no admission field).
+          const admitted = data.role === "host" || data.admission === "admitted";
+          if (change.type === "removed" || data.active === false || !admitted) {
             disconnectFromPeer(uid);
           } else {
             connectToPeer(uid, data.role, data.displayName);

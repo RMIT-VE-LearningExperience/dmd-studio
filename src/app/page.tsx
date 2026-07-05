@@ -6,6 +6,8 @@ import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import {
   collection,
   addDoc,
+  doc,
+  updateDoc,
   serverTimestamp,
   query,
   where,
@@ -36,6 +38,8 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState("");
 
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
@@ -71,6 +75,18 @@ export default function Home() {
     });
     setCreating(false);
     router.push(`/session/${sessionRef.id}`);
+  };
+
+  const startRename = (project: Project) => {
+    setRenamingId(project.id);
+    setTitleDraft(project.title);
+  };
+
+  const commitRename = async (projectId: string) => {
+    const title = titleDraft.trim();
+    setRenamingId(null);
+    if (!title) return;
+    await updateDoc(doc(db, "sessions", projectId), { title });
   };
 
   const removeProject = async (project: Project) => {
@@ -157,7 +173,22 @@ export default function Home() {
                 </div>
                 <div className="flex items-end justify-between gap-2 p-4">
                   <div className="flex flex-col gap-0.5">
-                    <span className="text-sm font-semibold text-neutral-100">{project.title}</span>
+                    {renamingId === project.id ? (
+                      <input
+                        autoFocus
+                        value={titleDraft}
+                        onChange={(e) => setTitleDraft(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={() => commitRename(project.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(project.id);
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        className="w-full rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-sm font-semibold text-neutral-100 outline-none"
+                      />
+                    ) : (
+                      <span className="text-sm font-semibold text-neutral-100">{project.title}</span>
+                    )}
                     <span className="text-xs text-neutral-500">
                       Created {formatDate(project.createdAt)} ·{" "}
                       {project.recordingCount === 0
@@ -166,6 +197,16 @@ export default function Home() {
                     </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startRename(project);
+                      }}
+                      title="Rename project"
+                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+                    >
+                      Rename
+                    </button>
                     {project.recordingCount > 0 && (
                       <button
                         onClick={(e) => {

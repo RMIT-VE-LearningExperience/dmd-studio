@@ -205,7 +205,13 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
             disabled={!stream || !name.trim() || joining}
             className="mt-2 rounded-full bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {joining ? "Joining…" : "Join studio"}
+            {joining
+              ? role === "host"
+                ? "Joining…"
+                : "Asking to join…"
+              : role === "host"
+                ? "Join studio"
+                : "Ask to join"}
           </button>
         </div>
       </div>

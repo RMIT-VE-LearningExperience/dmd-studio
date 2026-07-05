@@ -1,7 +1,11 @@
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getStorage } = require("firebase-admin/storage");
 const { getFirestore } = require("firebase-admin/firestore");
+const { spawn } = require("node:child_process");
+const { unlink } = require("node:fs/promises");
+const path = require("node:path");
+const os = require("node:os");
 
 initializeApp();
 
@@ -77,5 +81,330 @@ exports.composeRecording = onDocumentCreated(
       .doc(`sessions/${sessionId}/recordings/${recId}`)
       .update({ composedPath: finalName });
     console.log(`Composed ${parts.length} parts into ${finalName}`);
+  },
+);
+
+// Runs ffmpeg over the composed take, streaming the input straight from GCS
+// (MediaRecorder output — WebM or fragmented MP4 — is pipe-friendly, and not
+// buffering the input keeps memory needs at "size of the WAV", not "size of
+// the video"). Produces two artifacts in one pass:
+//   audio.wav  — 48 kHz stereo PCM, the per-track audio podcasters download
+//   stt.flac   — 16 kHz mono, the compact input Speech-to-Text wants
+function runFfmpegArgs(args, inputStream) {
+  const ffmpegPath = require("ffmpeg-static");
+  return new Promise((resolve, reject) => {
+    const ff = spawn(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", ...args]);
+    let stderr = "";
+    ff.stderr.on("data", (d) => (stderr += d));
+    if (inputStream) {
+      // ffmpeg may close stdin once it has what it needs — EPIPE here is normal.
+      ff.stdin.on("error", () => {});
+      inputStream.on("error", (err) => {
+        ff.kill("SIGKILL");
+        reject(err);
+      });
+      inputStream.pipe(ff.stdin);
+    }
+    ff.on("error", reject);
+    ff.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`)),
+    );
+  });
+}
+
+function runFfmpeg(inputStream, wavPath, flacPath) {
+  return runFfmpegArgs(
+    [
+      "-i", "pipe:0",
+      "-vn", "-acodec", "pcm_s16le", "-ar", "48000", wavPath,
+      "-vn", "-ac", "1", "-ar", "16000", "-c:a", "flac", flacPath,
+    ],
+    inputStream,
+  );
+}
+
+function ffprobeDuration(filePath) {
+  const ffprobePath = require("ffprobe-static").path;
+  return new Promise((resolve, reject) => {
+    const p = spawn(ffprobePath, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "csv=p=0",
+      filePath,
+    ]);
+    let out = "";
+    let err = "";
+    p.stdout.on("data", (d) => (out += d));
+    p.stderr.on("data", (d) => (err += d));
+    p.on("error", reject);
+    p.on("close", (code) => {
+      const dur = parseFloat(out.trim());
+      if (code === 0 && Number.isFinite(dur)) resolve(dur);
+      else reject(new Error(`ffprobe failed (${code}): ${err.slice(-300)}`));
+    });
+  });
+}
+
+exports.extractAudio = onDocumentUpdated(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "2GiB",
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const after = event.data?.after?.data();
+    if (!after) return;
+    // Fires on every recording-doc update — only act on the one transition
+    // that matters: compose finished, audio not yet extracted.
+    if (!after.composedPath || after.audioPath) return;
+
+    const { sessionId, recId } = event.params;
+    const bucket = getStorage().bucket(BUCKET);
+    const prefix = after.composedPath.slice(0, after.composedPath.lastIndexOf("/") + 1);
+    const wavName = `${prefix}audio.wav`;
+    const flacName = `${prefix}stt.flac`;
+
+    const wavTmp = path.join(os.tmpdir(), `${recId}-audio.wav`);
+    const flacTmp = path.join(os.tmpdir(), `${recId}-stt.flac`);
+
+    try {
+      await runFfmpeg(bucket.file(after.composedPath).createReadStream(), wavTmp, flacTmp);
+      await bucket.upload(wavTmp, { destination: wavName, metadata: { contentType: "audio/wav" } });
+      await bucket.upload(flacTmp, { destination: flacName, metadata: { contentType: "audio/flac" } });
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        audioPath: wavName,
+        sttPath: flacName,
+        transcriptStatus: "pending",
+      });
+      console.log(`Extracted audio for ${recId}: ${wavName}`);
+    } catch (err) {
+      console.error(`Audio extraction failed for ${recId}:`, err);
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        // Mark audioPath so this doesn't retrigger forever; surface the failure.
+        audioPath: null,
+        transcriptStatus: "error",
+        transcriptError: "Audio extraction failed",
+      });
+    } finally {
+      await Promise.all([unlink(wavTmp).catch(() => {}), unlink(flacTmp).catch(() => {})]);
+    }
+  },
+);
+
+// Firestore docs cap at 1 MiB — a transcript would need ~20 h of speech to
+// get near that, but truncate defensively rather than fail the write.
+const TRANSCRIPT_CHAR_LIMIT = 800_000;
+
+exports.transcribeRecording = onDocumentUpdated(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "512MiB",
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) return;
+    // Only the pending transition (written by extractAudio) starts a job.
+    if (after.transcriptStatus !== "pending" || before?.transcriptStatus === "pending") return;
+    if (!after.sttPath) return;
+
+    const { sessionId, recId } = event.params;
+    const docRef = getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`);
+
+    try {
+      const { SpeechClient } = require("@google-cloud/speech").v2;
+      const client = new SpeechClient();
+      const projectId = process.env.GCLOUD_PROJECT;
+      const uri = `gs://${BUCKET}/${after.sttPath}`;
+
+      const [operation] = await client.batchRecognize({
+        recognizer: `projects/${projectId}/locations/global/recognizers/_`,
+        config: {
+          autoDecodingConfig: {},
+          languageCodes: ["en-AU"],
+          model: "long",
+          features: { enableAutomaticPunctuation: true },
+        },
+        files: [{ uri }],
+        recognitionOutputConfig: { inlineResponseConfig: {} },
+      });
+      const [response] = await operation.promise();
+
+      const fileResult = response.results?.[uri];
+      if (fileResult?.error?.message) throw new Error(fileResult.error.message);
+      let transcript = (fileResult?.transcript?.results ?? [])
+        .map((r) => r.alternatives?.[0]?.transcript?.trim() ?? "")
+        .filter(Boolean)
+        .join("\n");
+      if (transcript.length > TRANSCRIPT_CHAR_LIMIT) {
+        transcript = `${transcript.slice(0, TRANSCRIPT_CHAR_LIMIT)}\n… [truncated]`;
+      }
+
+      await docRef.update({ transcript, transcriptStatus: "done" });
+      console.log(`Transcribed ${recId}: ${transcript.length} chars`);
+    } catch (err) {
+      console.error(`Transcription failed for ${recId}:`, err);
+      await docRef.update({
+        transcriptStatus: "error",
+        transcriptError: err.message ?? "Transcription failed",
+      });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Produced episode: combine every participant's track for one take into a
+// single side-by-side MP4 with mixed audio, aligned by each recorder's
+// wall-clock start time. Host-triggered via an `episodes/take-{n}` doc.
+// ---------------------------------------------------------------------------
+
+const CANVAS_W = 1280;
+const CANVAS_H = 720;
+const TILE_W = 632;
+const TILE_H = 356;
+
+// Even pixel coordinates on a 1280x720 canvas (yuv420p needs even offsets).
+function tileLayout(n) {
+  const xL = 4;
+  const xR = 644;
+  const yT = 2;
+  const yB = 362;
+  switch (n) {
+    case 1:
+      return [{ x: 0, y: 0 }];
+    case 2:
+      return [{ x: xL, y: 182 }, { x: xR, y: 182 }];
+    case 3:
+      return [{ x: xL, y: yT }, { x: xR, y: yT }, { x: 324, y: yB }];
+    default:
+      return [{ x: xL, y: yT }, { x: xR, y: yT }, { x: xL, y: yB }, { x: xR, y: yB }];
+  }
+}
+
+exports.produceEpisode = onDocumentCreated(
+  {
+    document: "sessions/{sessionId}/episodes/{episodeId}",
+    region: "us-central1",
+    memory: "4GiB",
+    cpu: 4,
+    concurrency: 1,
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const data = snap.data();
+    if (data.status !== "pending") return;
+
+    const { sessionId, episodeId } = event.params;
+    const take = data.take;
+    const docRef = snap.ref;
+    const bucket = getStorage().bucket(BUCKET);
+    const tmpFiles = [];
+
+    try {
+      await docRef.update({ status: "processing" });
+
+      const recsSnap = await getFirestore().collection(`sessions/${sessionId}/recordings`).get();
+      const tracks = recsSnap.docs
+        .map((d) => d.data())
+        .filter((r) => r.take === take && r.composedPath);
+      if (tracks.length === 0) throw new Error("No composed tracks found for this take");
+      if (tracks.length > 4) throw new Error("Episodes support at most 4 tracks");
+
+      // Host first, then guests alphabetically — stable tile order.
+      tracks.sort((a, b) =>
+        a.role === "host" ? -1 : b.role === "host" ? 1
+          : (a.displayName || "").localeCompare(b.displayName || ""));
+
+      // Align tracks on the earliest recorder start; tracks without a
+      // startedAtMs (pre-sync recordings) start at zero.
+      const starts = tracks.map((t) => t.startedAtMs ?? null);
+      const t0 = Math.min(...starts.filter((s) => s !== null).concat([Infinity]));
+      const offsets = starts.map((s) => (s === null || t0 === Infinity ? 0 : (s - t0) / 1000));
+
+      const n = tracks.length;
+      const tw = n === 1 ? CANVAS_W : TILE_W;
+      const th = n === 1 ? CANVAS_H : TILE_H;
+
+      // Pass 1 — normalize each track into an aligned tile: fixed size/fps,
+      // black lead-in + silence covering its start offset. Input streams
+      // straight from GCS so memory stays at "tiles + episode", not "videos".
+      const tilePaths = [];
+      for (let i = 0; i < n; i++) {
+        const tilePath = path.join(os.tmpdir(), `${episodeId}-tile-${i}.mp4`);
+        tmpFiles.push(tilePath);
+        tilePaths.push(tilePath);
+        const off = offsets[i];
+        const vf =
+          `fps=30,scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
+          `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` +
+          (off > 0 ? `,tpad=start_duration=${off.toFixed(3)}:start_mode=add:color=black` : "");
+        const af =
+          (off > 0 ? `adelay=${Math.round(off * 1000)}:all=1,` : "") + "aresample=48000";
+        await runFfmpegArgs(
+          [
+            "-i", "pipe:0",
+            "-vf", vf,
+            "-af", af,
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "192k",
+            tilePath,
+          ],
+          bucket.file(tracks[i].composedPath).createReadStream(),
+        );
+      }
+
+      const durations = await Promise.all(tilePaths.map(ffprobeDuration));
+      const total = Math.max(...durations);
+
+      const outPath = path.join(os.tmpdir(), `${episodeId}-episode.mp4`);
+      tmpFiles.push(outPath);
+
+      if (n === 1) {
+        // A single tile already is the episode — just add faststart.
+        await runFfmpegArgs(["-i", tilePaths[0], "-c", "copy", "-movflags", "+faststart", outPath]);
+      } else {
+        // Pass 2 — overlay the tiles onto a black canvas and mix audio.
+        const layout = tileLayout(n);
+        let filter = `color=black:s=${CANVAS_W}x${CANVAS_H}:d=${total.toFixed(3)}[base]`;
+        let prev = "base";
+        for (let i = 0; i < n; i++) {
+          const out = i === n - 1 ? "vout" : `v${i}`;
+          filter += `;[${prev}][${i}:v]overlay=${layout[i].x}:${layout[i].y}[${out}]`;
+          prev = out;
+        }
+        filter += `;${tilePaths.map((_, i) => `[${i}:a]`).join("")}amix=inputs=${n}:duration=longest:normalize=0[aout]`;
+
+        await runFfmpegArgs([
+          ...tilePaths.flatMap((p) => ["-i", p]),
+          "-filter_complex", filter,
+          "-map", "[vout]", "-map", "[aout]",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "192k",
+          "-movflags", "+faststart",
+          outPath,
+        ]);
+      }
+
+      const destination = `recordings/${sessionId}/episodes/${episodeId}.mp4`;
+      await bucket.upload(outPath, { destination, metadata: { contentType: "video/mp4" } });
+
+      await docRef.update({
+        status: "done",
+        path: destination,
+        durationSec: Math.round(total),
+        trackCount: n,
+      });
+      console.log(`Produced episode ${episodeId} for ${sessionId}: ${n} tracks, ${total.toFixed(1)}s`);
+    } catch (err) {
+      console.error(`Episode production failed for ${sessionId}/${episodeId}:`, err);
+      await docRef.update({ status: "error", error: String(err.message ?? err) });
+    } finally {
+      await Promise.all(tmpFiles.map((f) => unlink(f).catch(() => {})));
+    }
   },
 );

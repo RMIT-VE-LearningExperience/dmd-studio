@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { storage, db } from "@/lib/firebase";
@@ -44,6 +44,9 @@ type ActiveTake = {
   recorder: MediaRecorder;
   chunkCount: number;
   totalBytes: number;
+  // Wall-clock start, published with the completion doc — the episode
+  // producer aligns everyone's tracks by these.
+  startedAtMs: number;
 };
 
 const CHUNK_INTERVAL_MS = 5000;
@@ -61,6 +64,27 @@ export function useLocalRecorder(sessionId: string, uid: string) {
   const activeTakeRef = useRef<ActiveTake | null>(null);
   const stopPromiseRef = useRef<Promise<void> | null>(null);
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  // Mirror upload state onto this participant's presence doc so the host can
+  // see everyone's upload health live (and after a guest leaves the call).
+  // Progress state only changes about once per chunk (~5s), so this stays
+  // one small write per participant per chunk.
+  useEffect(() => {
+    if (status === "idle") return;
+    setDoc(
+      doc(db, "sessions", sessionId, "participants", uid),
+      {
+        upload: {
+          state: status,
+          take: activeTakeRef.current?.take ?? 0,
+          uploadedBytes: progress.uploadedBytes,
+          totalBytes: progress.totalBytes,
+          updatedAt: serverTimestamp(),
+        },
+      },
+      { merge: true },
+    ).catch(() => {});
+  }, [sessionId, uid, status, progress]);
 
   // Chunks upload one at a time, in order, as they're recorded — each is
   // its own Storage object so a crash mid-call only loses the last few
@@ -106,6 +130,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
         const options = pickRecorderOptions(width ?? 1280, height ?? 720);
 
         const recorder = new MediaRecorder(stream, options);
+        const startedAtMs = Date.now();
         const takeSession: ActiveTake = {
           take,
           recId: `${sessionId}_${uid}_t${take}`,
@@ -114,6 +139,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
           recorder,
           chunkCount: 0,
           totalBytes: 0,
+          startedAtMs,
         };
 
         setProgress({ uploadedChunks: 0, totalChunks: 0, uploadedBytes: 0, totalBytes: 0 });
@@ -161,7 +187,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
           mimeType: recorder.mimeType || options.mimeType || "video/webm",
           displayName: meta.displayName,
           role: meta.role,
-          startedAtMs: Date.now(),
+          startedAtMs,
         }).catch(() => {});
       } catch (err) {
         setStatus("error");
@@ -221,6 +247,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
           totalBytes: takeSession.totalBytes,
           mimeType: recorder.mimeType || "video/webm",
           extension: takeSession.extension,
+          startedAtMs: takeSession.startedAtMs,
           completedAt: serverTimestamp(),
         });
         await deleteTakeMeta(takeSession.recId);

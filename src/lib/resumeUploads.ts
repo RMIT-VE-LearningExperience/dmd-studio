@@ -74,11 +74,28 @@ async function doResume(
       totalBytes: sizes.reduce((a, b) => a + b, 0),
       mimeType: meta.mimeType,
       extension: meta.extension,
+      startedAtMs: meta.startedAtMs,
       completedAt: serverTimestamp(),
     });
 
     await deleteTakeMeta(meta.recId);
     resumedTakes += 1;
+  }
+
+  if (resumedTakes > 0) {
+    // The participant doc may still say "recording"/"finishing" from the
+    // visit that died — let the host see the take actually made it.
+    await setDoc(
+      doc(db, "sessions", sessionId, "participants", uid),
+      {
+        upload: {
+          state: "uploaded",
+          take: metas[metas.length - 1].take,
+          updatedAt: serverTimestamp(),
+        },
+      },
+      { merge: true },
+    ).catch(() => {});
   }
 
   return resumedTakes;

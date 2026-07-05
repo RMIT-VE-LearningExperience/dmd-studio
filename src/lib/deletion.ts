@@ -24,7 +24,12 @@ export async function deleteProject(sessionId: string) {
     await deleteRecording(sessionId, uid, take);
   }
 
-  for (const sub of ["participants", "connections"]) {
+  // Produced episodes live in their own Storage folder, outside any take.
+  const episodesFolder = storageRef(storage, `recordings/${sessionId}/episodes`);
+  const episodeListing = await listAll(episodesFolder);
+  await Promise.all(episodeListing.items.map((item) => deleteObject(item)));
+
+  for (const sub of ["participants", "connections", "episodes"]) {
     const snap = await getDocs(collection(db, "sessions", sessionId, sub));
     await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
   }

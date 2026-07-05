@@ -3,7 +3,18 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { collection, onSnapshot, orderBy, query, Timestamp } from "firebase/firestore";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+} from "firebase/firestore";
 import { ref as storageRef, listAll, getBlob, getDownloadURL, type StorageReference } from "firebase/storage";
 import { auth, db, storage } from "@/lib/firebase";
 import { deleteRecording } from "@/lib/deletion";
@@ -20,6 +31,9 @@ type RecordingDoc = {
   extension: string;
   completedAt: Timestamp | null;
   composedPath: string | null;
+  audioPath: string | null;
+  transcript: string | null;
+  transcriptStatus: "pending" | "done" | "error" | null;
 };
 
 type FullFetchState =
@@ -148,12 +162,183 @@ function QuickPreview({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
   );
 }
 
+type EpisodeDoc = {
+  id: string;
+  take: number;
+  status: "pending" | "processing" | "done" | "error";
+  path: string | null;
+  error: string | null;
+  durationSec: number | null;
+};
+
+function formatDuration(sec: number | null) {
+  if (!sec) return "";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function EpisodeRow({ sessionId, episode }: { sessionId: string; episode: EpisodeDoc }) {
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (episode.status !== "done" || !episode.path) return;
+    let cancelled = false;
+    getDownloadURL(storageRef(storage, episode.path))
+      .then((url) => {
+        if (!cancelled) setStreamUrl(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [episode.status, episode.path]);
+
+  const download = async () => {
+    setDownloading(true);
+    try {
+      const blob = await getBlob(storageRef(storage, episode.path!));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `episode-take${episode.take}.mp4`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Download failed — try again.");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const retry = async () => {
+    const ref = doc(db, "sessions", sessionId, "episodes", episode.id);
+    await deleteDoc(ref);
+    await setDoc(ref, { take: episode.take, status: "pending", requestedAt: serverTimestamp() });
+  };
+
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border border-indigo-900/60 bg-neutral-900 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">
+            Episode{episode.take > 1 ? ` · Take ${episode.take}` : ""}
+          </p>
+          <p className="text-xs text-neutral-500">
+            All tracks combined{episode.durationSec ? ` · ${formatDuration(episode.durationSec)}` : ""}
+          </p>
+        </div>
+        {episode.status === "done" && (
+          <button
+            onClick={download}
+            disabled={downloading}
+            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
+          >
+            {downloading ? "Downloading…" : "Download"}
+          </button>
+        )}
+      </div>
+
+      {(episode.status === "pending" || episode.status === "processing") && (
+        <p className="text-xs text-neutral-500">
+          Producing the episode… this takes a few minutes for longer recordings. It&rsquo;ll appear
+          here automatically.
+        </p>
+      )}
+
+      {episode.status === "error" && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-red-400">Episode production failed: {episode.error}</p>
+          <button onClick={retry} className="shrink-0 text-xs text-indigo-400 hover:underline">
+            Retry
+          </button>
+        </div>
+      )}
+
+      {episode.status === "done" &&
+        (streamUrl ? (
+          <video src={streamUrl} controls playsInline className="w-full rounded-xl bg-black" />
+        ) : (
+          <div className="flex aspect-video w-full items-center justify-center rounded-xl bg-black text-xs text-neutral-600">
+            Loading player…
+          </div>
+        ))}
+    </div>
+  );
+}
+
+function TranscriptPanel({ rec }: { rec: RecordingDoc }) {
+  const [copied, setCopied] = useState(false);
+
+  if (!rec.transcriptStatus) return null;
+
+  if (rec.transcriptStatus === "pending") {
+    return (
+      <p className="text-xs text-neutral-500">
+        Transcribing… this usually takes a few minutes. It&rsquo;ll appear here automatically.
+      </p>
+    );
+  }
+
+  if (rec.transcriptStatus === "error") {
+    return <p className="text-xs text-red-400">Transcription failed for this track.</p>;
+  }
+
+  if (!rec.transcript) {
+    return <p className="text-xs text-neutral-500">No speech detected in this track.</p>;
+  }
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(rec.transcript!);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const downloadTxt = () => {
+    const url = URL.createObjectURL(new Blob([rec.transcript!], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${rec.displayName || rec.role}-take${rec.take}-transcript.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  };
+
+  return (
+    <details className="rounded-xl border border-neutral-800 bg-neutral-950/60">
+      <summary className="cursor-pointer select-none px-4 py-3 text-xs font-medium text-neutral-300">
+        Transcript
+      </summary>
+      <div className="flex flex-col gap-3 px-4 pb-4">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={copy}
+            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+          <button
+            onClick={downloadTxt}
+            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+          >
+            Download .txt
+          </button>
+        </div>
+        <p className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-neutral-400">
+          {rec.transcript}
+        </p>
+      </div>
+    </details>
+  );
+}
+
 // Once the Cloud Function has composed the take into a single file, playback
 // is just streaming that file — no client-side stitching or full download.
 function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc }) {
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingAudio, setDownloadingAudio] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
@@ -184,6 +369,23 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
       window.alert(err instanceof Error ? err.message : "Download failed — try again.");
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const downloadAudio = async () => {
+    setDownloadingAudio(true);
+    try {
+      const blob = await getBlob(storageRef(storage, rec.audioPath!));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${rec.displayName || rec.role}-take${rec.take}.wav`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Audio download failed — try again.");
+    } finally {
+      setDownloadingAudio(false);
     }
   };
 
@@ -221,6 +423,15 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
           >
             {downloading ? "Downloading…" : "Download"}
           </button>
+          {rec.audioPath && (
+            <button
+              onClick={downloadAudio}
+              disabled={downloadingAudio || deleting}
+              className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
+            >
+              {downloadingAudio ? "Downloading…" : "Audio (WAV)"}
+            </button>
+          )}
           <button
             onClick={remove}
             disabled={deleting || downloading}
@@ -241,6 +452,8 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
           Loading player…
         </div>
       )}
+
+      <TranscriptPanel rec={rec} />
     </div>
   );
 }
@@ -394,6 +607,8 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [recordings, setRecordings] = useState<RecordingDoc[]>([]);
+  const [episodes, setEpisodes] = useState<EpisodeDoc[]>([]);
+  const [isHost, setIsHost] = useState(false);
 
   useEffect(
     () =>
@@ -423,11 +638,57 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             extension: (data.extension as string) ?? "webm",
             completedAt: (data.completedAt as Timestamp) ?? null,
             composedPath: (data.composedPath as string) ?? null,
+            audioPath: (data.audioPath as string) ?? null,
+            transcript: (data.transcript as string) ?? null,
+            transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,
           };
         }),
       );
     });
   }, [user, id]);
+
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(collection(db, "sessions", id, "episodes"), (snap) => {
+      setEpisodes(
+        snap.docs
+          .map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              take: (data.take as number) ?? 1,
+              status: (data.status as EpisodeDoc["status"]) ?? "pending",
+              path: (data.path as string) ?? null,
+              error: (data.error as string) ?? null,
+              durationSec: (data.durationSec as number) ?? null,
+            };
+          })
+          .sort((a, b) => a.take - b.take),
+      );
+    });
+  }, [user, id]);
+
+  // Only the host can request episodes (enforced by rules too) — hide the
+  // button from guests viewing the page.
+  useEffect(() => {
+    if (!user) return;
+    getDoc(doc(db, "sessions", id))
+      .then((snap) => setIsHost(snap.data()?.hostUid === user.uid))
+      .catch(() => setIsHost(false));
+  }, [user, id]);
+
+  const produceEpisode = async (take: number) => {
+    await setDoc(doc(db, "sessions", id, "episodes", `take-${take}`), {
+      take,
+      status: "pending",
+      requestedAt: serverTimestamp(),
+    });
+  };
+
+  // Takes with at least one composed track and no episode yet.
+  const producibleTakes = [...new Set(
+    recordings.filter((r) => r.composedPath).map((r) => r.take),
+  )].filter((take) => !episodes.some((e) => e.take === take)).sort((a, b) => a - b);
 
   if (authLoading) {
     return <p className="p-6 text-neutral-500">Loading…</p>;
@@ -461,6 +722,36 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             Enter studio
           </Link>
         </header>
+
+        {(episodes.length > 0 || (isHost && producibleTakes.length > 0)) && (
+          <section className="flex flex-col gap-4">
+            {episodes.map((ep) => (
+              <EpisodeRow key={ep.id} sessionId={id} episode={ep} />
+            ))}
+            {isHost &&
+              producibleTakes.map((take) => (
+                <div
+                  key={take}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/50 p-5"
+                >
+                  <div>
+                    <p className="text-sm font-semibold">
+                      Produce episode{producibleTakes.length > 1 || take > 1 ? ` · Take ${take}` : ""}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      Combines every uploaded track into one side-by-side video with mixed audio.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => produceEpisode(take)}
+                    className="rounded-full bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                  >
+                    Produce episode
+                  </button>
+                </div>
+              ))}
+          </section>
+        )}
 
         {recordings.length === 0 ? (
           <p className="text-sm text-neutral-500">

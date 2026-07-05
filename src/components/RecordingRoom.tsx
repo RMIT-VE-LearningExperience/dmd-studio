@@ -2,7 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { doc, onSnapshot, setDoc, serverTimestamp, Timestamp } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useWebRTCMesh, type ParticipantRole } from "@/hooks/useWebRTCMesh";
 import { useLocalRecorder } from "@/hooks/useLocalRecorder";
@@ -157,6 +166,126 @@ function ControlButton({
   );
 }
 
+type UploadInfo = {
+  state: "recording" | "finishing" | "uploaded" | "error";
+  take: number;
+  uploadedBytes?: number;
+  totalBytes?: number;
+};
+
+type ParticipantDoc = {
+  uid: string;
+  role: ParticipantRole;
+  displayName: string;
+  active?: boolean;
+  admission?: "pending" | "admitted" | "denied";
+  upload?: UploadInfo;
+};
+
+// Live view of every participant doc, for the host/producer control surfaces:
+// admission requests and the per-track upload panel.
+function useParticipantDocs(sessionId: string, enabled: boolean) {
+  const [participants, setParticipants] = useState<ParticipantDoc[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    return onSnapshot(collection(db, "sessions", sessionId, "participants"), (snap) => {
+      setParticipants(
+        snap.docs.map((d) => ({ ...(d.data() as Omit<ParticipantDoc, "uid">), uid: d.id })),
+      );
+    });
+  }, [sessionId, enabled]);
+  return participants;
+}
+
+function AdmissionRequests({
+  sessionId,
+  requests,
+}: {
+  sessionId: string;
+  requests: ParticipantDoc[];
+}) {
+  const decide = (uid: string, admission: "admitted" | "denied") => {
+    void updateDoc(doc(db, "sessions", sessionId, "participants", uid), { admission }).catch(
+      () => {},
+    );
+  };
+
+  if (requests.length === 0) return null;
+
+  return (
+    <div className="fixed left-1/2 top-16 z-50 flex -translate-x-1/2 flex-col gap-2">
+      {requests.map((p) => (
+        <div
+          key={p.uid}
+          className="flex items-center gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 px-4 py-3 shadow-lg backdrop-blur"
+        >
+          <span className="text-sm">
+            <span className="font-semibold">{p.displayName || "Someone"}</span>{" "}
+            <span className="text-neutral-400">wants to join as {ROLE_LABEL[p.role] ?? p.role}</span>
+          </span>
+          <button
+            onClick={() => decide(p.uid, "admitted")}
+            className="rounded-full bg-indigo-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-indigo-500"
+          >
+            Admit
+          </button>
+          <button
+            onClick={() => decide(p.uid, "denied")}
+            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-red-500 hover:text-red-400"
+          >
+            Deny
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function uploadLabel(u: UploadInfo) {
+  switch (u.state) {
+    case "recording":
+      return `Recording · ${formatBytes(u.uploadedBytes ?? 0)} uploaded`;
+    case "finishing": {
+      const pct = u.totalBytes
+        ? Math.min(100, Math.round(((u.uploadedBytes ?? 0) / u.totalBytes) * 100))
+        : 0;
+      return `Uploading… ${pct}%`;
+    }
+    case "uploaded":
+      return "Uploaded ✓";
+    case "error":
+      return "Upload failed";
+  }
+}
+
+// Host/producer answer to "did everyone's track actually land?" — stays
+// visible even after a guest's tile disappears because they left the call.
+function UploadStatusPanel({ tracks }: { tracks: ParticipantDoc[] }) {
+  if (tracks.length === 0) return null;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-40 flex w-64 flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur">
+      <p className="text-xs font-semibold text-neutral-400">Track uploads</p>
+      {tracks.map((p) => (
+        <div key={p.uid} className="flex items-center justify-between gap-2 text-xs">
+          <span className="truncate text-neutral-300">{p.displayName || p.uid.slice(0, 6)}</span>
+          <span
+            className={
+              p.upload!.state === "uploaded"
+                ? "text-emerald-400"
+                : p.upload!.state === "error"
+                  ? "text-red-400"
+                  : "text-neutral-400"
+            }
+          >
+            {uploadLabel(p.upload!)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Detects uploads a previous visit left unfinished (tab closed mid-take or
 // mid-upload) and completes them automatically.
 function ResumeUploadsBanner({ sessionId, uid }: { sessionId: string; uid: string }) {
@@ -232,9 +361,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [camOn, setCamOn] = useState(true);
   const [recordingFlag, setRecordingFlag] = useState<RecordingFlag | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
   const startedTakeRef = useRef(0);
 
   const isRecordingParticipant = role !== "producer";
+  const canModerate = role === "host";
+  const participantDocs = useParticipantDocs(sessionId, role === "host" || role === "producer");
+  const pendingRequests = participantDocs.filter((p) => p.admission === "pending");
+  const uploadTracks = participantDocs.filter((p) => p.upload && p.uid !== uid);
   const { peers, join, leave } = useWebRTCMesh(sessionId, uid, role);
   const {
     status: recordingStatus,
@@ -313,8 +447,61 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     setLocalStream(stream);
     setResolutionLabel(getVideoResolutionLabel(stream));
     setName(chosenName);
-    await join(stream, chosenName);
-    setJoined(true);
+    if (role === "host") {
+      await join(stream, chosenName);
+      setJoined(true);
+      return;
+    }
+    // Guests and producers knock first and wait for the host to let them in.
+    // Anyone already admitted this session skips the queue on rejoin.
+    const participantRef = doc(db, "sessions", sessionId, "participants", uid);
+    const existing = await getDoc(participantRef);
+    if (existing.data()?.admission === "admitted") {
+      await join(stream, chosenName);
+      setJoined(true);
+      return;
+    }
+    await setDoc(
+      participantRef,
+      {
+        role,
+        displayName: chosenName,
+        admission: "pending",
+        active: false,
+        knockedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+    setAdmission("pending");
+  };
+
+  // While waiting at the door, follow our own participant doc — the host
+  // flipping `admission` is what lets us in (or turns us away).
+  useEffect(() => {
+    if (admission !== "pending") return;
+    let handled = false;
+    const unsub = onSnapshot(doc(db, "sessions", sessionId, "participants", uid), (snap) => {
+      const decision = snap.data()?.admission;
+      if (decision === "admitted" && !handled) {
+        handled = true;
+        const stream = localStreamRef.current;
+        if (!stream) return;
+        void join(stream, name).then(() => {
+          setJoined(true);
+          setAdmission(null);
+        });
+      } else if (decision === "denied") {
+        setAdmission("denied");
+      }
+    });
+    return unsub;
+  }, [admission, sessionId, uid, join, name]);
+
+  const cancelKnock = () => {
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    setLocalStream(null);
+    setAdmission(null);
   };
 
   const toggleRecording = async () => {
@@ -379,10 +566,45 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       ? Math.min(100, Math.round((progress.uploadedBytes / progress.totalBytes) * 100))
       : 0;
 
+  if (admission === "pending") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-neutral-950 p-6 text-neutral-100">
+        <div className="w-full max-w-sm">
+          <VideoTile stream={localStream} muted mirrored label={`${name} (You)`} />
+        </div>
+        <div className="flex flex-col items-center gap-1">
+          <p className="text-sm font-medium">Asking to join…</p>
+          <p className="text-xs text-neutral-500">Waiting for the host to let you in.</p>
+        </div>
+        <button
+          onClick={cancelKnock}
+          className="text-xs text-neutral-500 underline hover:text-neutral-300"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  if (admission === "denied") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-neutral-950 p-6 text-neutral-100">
+        <p className="text-sm text-neutral-300">The host didn&rsquo;t let you into this studio.</p>
+        <button
+          onClick={cancelKnock}
+          className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+        >
+          Back to device check
+        </button>
+      </div>
+    );
+  }
+
   if (!joined) {
     return (
       <>
         <ResumeUploadsBanner sessionId={sessionId} uid={uid} />
+        {canModerate && <AdmissionRequests sessionId={sessionId} requests={pendingRequests} />}
         {recordingStatus === "finishing" && (
           <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-neutral-700 bg-neutral-900/95 px-4 py-2 text-xs font-medium text-neutral-200 shadow-lg backdrop-blur">
             Uploading your recording… {uploadPercent}% — keep this tab open
@@ -404,6 +626,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-neutral-950 p-6 text-neutral-100">
       <ResumeUploadsBanner sessionId={sessionId} uid={uid} />
+      {canModerate && <AdmissionRequests sessionId={sessionId} requests={pendingRequests} />}
+      {(role === "host" || role === "producer") && <UploadStatusPanel tracks={uploadTracks} />}
       {inCountdown && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
           <span className="text-8xl font-bold tabular-nums text-white">{countdownSeconds}</span>
