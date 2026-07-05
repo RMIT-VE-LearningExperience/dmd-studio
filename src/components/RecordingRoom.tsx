@@ -3,10 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
+  limitToLast,
   onSnapshot,
+  orderBy,
+  query,
   setDoc,
   updateDoc,
   serverTimestamp,
@@ -180,6 +184,7 @@ type ParticipantDoc = {
   active?: boolean;
   admission?: "pending" | "admitted" | "denied";
   upload?: UploadInfo;
+  screenUpload?: UploadInfo;
 };
 
 // Live view of every participant doc, for the host/producer control surfaces:
@@ -258,30 +263,147 @@ function uploadLabel(u: UploadInfo) {
   }
 }
 
+type UploadRow = { key: string; name: string; upload: UploadInfo };
+
 // Host/producer answer to "did everyone's track actually land?" — stays
 // visible even after a guest's tile disappears because they left the call.
-function UploadStatusPanel({ tracks }: { tracks: ParticipantDoc[] }) {
-  if (tracks.length === 0) return null;
+function UploadStatusPanel({ rows }: { rows: UploadRow[] }) {
+  if (rows.length === 0) return null;
 
   return (
     <div className="fixed bottom-4 right-4 z-40 flex w-64 flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur">
       <p className="text-xs font-semibold text-neutral-400">Track uploads</p>
-      {tracks.map((p) => (
-        <div key={p.uid} className="flex items-center justify-between gap-2 text-xs">
-          <span className="truncate text-neutral-300">{p.displayName || p.uid.slice(0, 6)}</span>
+      {rows.map((row) => (
+        <div key={row.key} className="flex items-center justify-between gap-2 text-xs">
+          <span className="truncate text-neutral-300">{row.name}</span>
           <span
             className={
-              p.upload!.state === "uploaded"
+              row.upload.state === "uploaded"
                 ? "text-emerald-400"
-                : p.upload!.state === "error"
+                : row.upload.state === "error"
                   ? "text-red-400"
                   : "text-neutral-400"
             }
           >
-            {uploadLabel(p.upload!)}
+            {uploadLabel(row.upload)}
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+type ChatMessage = {
+  id: string;
+  uid: string;
+  displayName: string;
+  text: string;
+  sentAt: Timestamp | null;
+};
+
+function useChatMessages(sessionId: string) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  useEffect(() => {
+    const q = query(
+      collection(db, "sessions", sessionId, "chat"),
+      orderBy("sentAt", "asc"),
+      limitToLast(200),
+    );
+    return onSnapshot(q, (snap) => {
+      setMessages(
+        snap.docs.map((d) => {
+          // "estimate" keeps our own just-sent message ordered correctly
+          // before the server timestamp lands.
+          const data = d.data({ serverTimestamps: "estimate" });
+          return {
+            id: d.id,
+            uid: (data.uid as string) ?? "",
+            displayName: (data.displayName as string) ?? "",
+            text: (data.text as string) ?? "",
+            sentAt: (data.sentAt as Timestamp) ?? null,
+          };
+        }),
+      );
+    });
+  }, [sessionId]);
+  return messages;
+}
+
+function formatChatTime(ts: Timestamp | null) {
+  if (!ts) return "";
+  return ts.toDate().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function ChatPanel({
+  messages,
+  selfUid,
+  onSend,
+  onClose,
+}: {
+  messages: ChatMessage[];
+  selfUid: string;
+  onSend: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [messages.length]);
+
+  const send = () => {
+    const text = draft.trim();
+    if (!text) return;
+    onSend(text);
+    setDraft("");
+  };
+
+  return (
+    <div className="fixed bottom-24 right-4 z-40 flex h-96 w-80 flex-col rounded-2xl border border-neutral-700 bg-neutral-900/95 shadow-xl backdrop-blur">
+      <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
+        <span className="text-xs font-semibold text-neutral-300">Chat</span>
+        <button onClick={onClose} className="text-xs text-neutral-500 hover:text-neutral-300">
+          Close
+        </button>
+      </div>
+      <div ref={listRef} className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 py-3">
+        {messages.length === 0 && (
+          <p className="text-xs text-neutral-600">No messages yet — say hi!</p>
+        )}
+        {messages.map((m) => (
+          <div key={m.id} className="flex flex-col gap-0.5">
+            <span className="text-[11px] text-neutral-500">
+              <span className={m.uid === selfUid ? "text-indigo-400" : "text-neutral-400"}>
+                {m.uid === selfUid ? "You" : m.displayName || "Someone"}
+              </span>{" "}
+              {formatChatTime(m.sentAt)}
+            </span>
+            <p className="whitespace-pre-wrap break-words text-xs text-neutral-200">{m.text}</p>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 border-t border-neutral-800 p-3">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          placeholder="Message everyone…"
+          className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500"
+        />
+        <button
+          onClick={send}
+          disabled={!draft.trim()}
+          className="rounded-full bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+        >
+          Send
+        </button>
+      </div>
     </div>
   );
 }
@@ -362,14 +484,50 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [recordingFlag, setRecordingFlag] = useState<RecordingFlag | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatSeenCount, setChatSeenCount] = useState(0);
   const startedTakeRef = useRef(0);
 
   const isRecordingParticipant = role !== "producer";
   const canModerate = role === "host";
   const participantDocs = useParticipantDocs(sessionId, role === "host" || role === "producer");
   const pendingRequests = participantDocs.filter((p) => p.admission === "pending");
-  const uploadTracks = participantDocs.filter((p) => p.upload && p.uid !== uid);
-  const { peers, join, leave } = useWebRTCMesh(sessionId, uid, role);
+  const uploadRows = participantDocs.flatMap((p) => {
+    if (p.uid === uid) return [];
+    const who = p.displayName || p.uid.slice(0, 6);
+    const rows: UploadRow[] = [];
+    if (p.upload) rows.push({ key: p.uid, name: who, upload: p.upload });
+    if (p.screenUpload) rows.push({ key: `${p.uid}-screen`, name: `${who} (screen)`, upload: p.screenUpload });
+    return rows;
+  });
+
+  const chatMessages = useChatMessages(sessionId);
+  // While the panel is open every message counts as seen — synced during
+  // render (React's "adjust state when inputs change" pattern) so the badge
+  // only ever tracks messages that land while the panel is closed.
+  if (chatOpen && chatSeenCount !== chatMessages.length) {
+    setChatSeenCount(chatMessages.length);
+  }
+  const chatUnread = chatOpen ? 0 : Math.max(0, chatMessages.length - chatSeenCount);
+
+  const sendChat = (text: string) => {
+    void addDoc(collection(db, "sessions", sessionId, "chat"), {
+      uid,
+      displayName: name,
+      role,
+      text,
+      sentAt: serverTimestamp(),
+    }).catch(() => {});
+  };
+  const {
+    peers,
+    screenPeers,
+    localScreenStream,
+    join,
+    leave,
+    startScreenShare,
+    stopScreenShare,
+  } = useWebRTCMesh(sessionId, uid, role);
   const {
     status: recordingStatus,
     error: recordingError,
@@ -377,6 +535,12 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     start,
     stopAndUpload,
   } = useLocalRecorder(sessionId, uid);
+  const {
+    status: screenRecStatus,
+    start: startScreenRec,
+    stopAndUpload: stopScreenRec,
+  } = useLocalRecorder(sessionId, uid, "screen");
+  const screenStartedTakeRef = useRef(0);
 
   // The session doc's `recording` field is the single source of truth for
   // whether a take is running — the host flips it and every recording
@@ -414,6 +578,49 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }
   }, [recordingFlag, joined, isRecordingParticipant, recordingStatus, start, stopAndUpload, name, role, now]);
 
+  // The screen recorder follows the same take clock as the camera, but only
+  // while a screen is actually shared — sharing mid-take starts a screen
+  // track from that moment (startedAtMs keeps it aligned in the episode),
+  // and stopping the share mid-take finishes just the screen upload.
+  useEffect(() => {
+    if (!joined || !isRecordingParticipant) return;
+    const target = recordingFlag?.startedAt ? recordingFlag.startedAt.toMillis() + COUNTDOWN_MS : null;
+    const takeRunning = !!recordingFlag?.active && target !== null && now >= target;
+    if (
+      takeRunning &&
+      localScreenStream &&
+      recordingFlag.take > screenStartedTakeRef.current &&
+      screenRecStatus !== "finishing"
+    ) {
+      screenStartedTakeRef.current = recordingFlag.take;
+      startScreenRec(localScreenStream, recordingFlag.take, { displayName: name, role });
+    } else if ((!recordingFlag?.active || !localScreenStream) && screenRecStatus === "recording") {
+      void stopScreenRec();
+    }
+  }, [recordingFlag, joined, isRecordingParticipant, localScreenStream, screenRecStatus, startScreenRec, stopScreenRec, name, role, now]);
+
+  const toggleScreenShare = async () => {
+    if (localScreenStream) {
+      if (screenRecStatus === "recording") void stopScreenRec();
+      await stopScreenShare();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 15 } },
+        audio: false,
+      });
+      // The browser's own "Stop sharing" bar bypasses our button.
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        void stopScreenRec();
+        void stopScreenShare();
+      });
+      await startScreenShare(stream);
+    } catch {
+      // User dismissed the screen picker.
+    }
+  };
+
   // Ticker driving both the countdown overlay and the REC timer — everything
   // is derived at render from the shared startedAt timestamp, so every
   // participant's clock reads the same.
@@ -432,15 +639,16 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const elapsed = recordStartMs !== null ? Math.max(0, now - recordStartMs) : 0;
 
   // A closed tab mid-recording OR mid-upload means silently lost footage —
-  // make the browser ask first in both phases.
+  // make the browser ask first in both phases (camera or screen track).
   useEffect(() => {
-    if (recordingStatus !== "recording" && recordingStatus !== "finishing") return;
+    const busy = (s: string) => s === "recording" || s === "finishing";
+    if (!busy(recordingStatus) && !busy(screenRecStatus)) return;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [recordingStatus]);
+  }, [recordingStatus, screenRecStatus]);
 
   const handleJoin = async (stream: MediaStream, chosenName: string) => {
     localStreamRef.current = stream;
@@ -556,6 +764,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       // background while the user returns to the lobby.
       void stopAndUpload();
     }
+    if (screenRecStatus === "recording") void stopScreenRec();
     await leave();
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     setJoined(false);
@@ -620,14 +829,23 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     );
   }
 
-  const gridColsClass = peers.length + 1 > 2 ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2";
+  const tileCount = 1 + peers.length + screenPeers.length + (localScreenStream ? 1 : 0);
+  const gridColsClass = tileCount > 2 ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2";
   const isRecordingActive = recordingFlag?.active ?? false;
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-neutral-950 p-6 text-neutral-100">
       <ResumeUploadsBanner sessionId={sessionId} uid={uid} />
       {canModerate && <AdmissionRequests sessionId={sessionId} requests={pendingRequests} />}
-      {(role === "host" || role === "producer") && <UploadStatusPanel tracks={uploadTracks} />}
+      {(role === "host" || role === "producer") && <UploadStatusPanel rows={uploadRows} />}
+      {chatOpen && (
+        <ChatPanel
+          messages={chatMessages}
+          selfUid={uid}
+          onSend={sendChat}
+          onClose={() => setChatOpen(false)}
+        />
+      )}
       {inCountdown && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
           <span className="text-8xl font-bold tabular-nums text-white">{countdownSeconds}</span>
@@ -674,6 +892,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
         />
 
+        {localScreenStream && (
+          <VideoTile
+            stream={localScreenStream}
+            muted
+            label={`${name} (Your screen)`}
+            badge={screenRecStatus === "recording" ? "REC" : undefined}
+          />
+        )}
+
         {peers.map((peer) => (
           <VideoTile
             key={peer.uid}
@@ -681,6 +908,16 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             muted={false}
             label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
             badge={CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState}
+          />
+        ))}
+
+        {screenPeers.map((sp) => (
+          <VideoTile
+            key={`screen-${sp.uid}`}
+            stream={sp.stream}
+            muted
+            label={`${sp.displayName} · Screen`}
+            badge={CONNECTION_LABEL[sp.connectionState] ?? sp.connectionState}
           />
         ))}
 
@@ -695,6 +932,25 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           <ControlButton onClick={toggleCam} active={camOn} title={camOn ? "Turn camera off" : "Turn camera on"}>
             {camOn ? "📷" : "🚫"}
           </ControlButton>
+
+          <ControlButton
+            onClick={toggleScreenShare}
+            active={localScreenStream ? false : undefined}
+            title={localScreenStream ? "Stop sharing screen" : "Share screen"}
+          >
+            🖥
+          </ControlButton>
+
+          <div className="relative">
+            <ControlButton onClick={() => setChatOpen((o) => !o)} title={chatOpen ? "Close chat" : "Open chat"}>
+              💬
+            </ControlButton>
+            {chatUnread > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] font-bold text-white">
+                {chatUnread > 9 ? "9+" : chatUnread}
+              </span>
+            )}
+          </div>
 
           {role === "host" && (
             <button
@@ -738,6 +994,10 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
 
         {recordingStatus === "uploaded" && (
           <p className="text-xs font-medium text-emerald-400">Recording uploaded ✓</p>
+        )}
+
+        {screenRecStatus === "finishing" && (
+          <p className="text-xs text-neutral-500">Uploading screen recording… keep this tab open</p>
         )}
 
         {isRecordingParticipant && recordingError && <p className="text-xs text-red-400">{recordingError}</p>}

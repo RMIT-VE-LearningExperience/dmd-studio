@@ -51,7 +51,14 @@ type ActiveTake = {
 
 const CHUNK_INTERVAL_MS = 5000;
 
-export function useLocalRecorder(sessionId: string, uid: string) {
+export type RecorderVariant = "camera" | "screen";
+
+export function useLocalRecorder(
+  sessionId: string,
+  uid: string,
+  variant: RecorderVariant = "camera",
+) {
+  const isScreen = variant === "screen";
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<UploadProgress>({
@@ -74,7 +81,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
     setDoc(
       doc(db, "sessions", sessionId, "participants", uid),
       {
-        upload: {
+        [isScreen ? "screenUpload" : "upload"]: {
           state: status,
           take: activeTakeRef.current?.take ?? 0,
           uploadedBytes: progress.uploadedBytes,
@@ -84,7 +91,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
       },
       { merge: true },
     ).catch(() => {});
-  }, [sessionId, uid, status, progress]);
+  }, [sessionId, uid, isScreen, status, progress]);
 
   // Chunks upload one at a time, in order, as they're recorded — each is
   // its own Storage object so a crash mid-call only loses the last few
@@ -113,10 +120,24 @@ export function useLocalRecorder(sessionId: string, uid: string) {
     [],
   );
 
+  // Screen recordings live beside the camera take in their own folder and
+  // doc, so the whole pipeline (compose → episode) treats them as one more
+  // track of the same take.
+  const folderFor = useCallback(
+    (take: number) =>
+      `recordings/${sessionId}/${uid}/${isScreen ? "screen-take" : "take"}-${take}`,
+    [sessionId, uid, isScreen],
+  );
+
+  const docIdFor = useCallback(
+    (take: number) => `${uid}${isScreen ? "_screen" : ""}_take${take}`,
+    [uid, isScreen],
+  );
+
   const chunkPathFor = useCallback(
     (take: number, extension: string, index: number) =>
-      `recordings/${sessionId}/${uid}/take-${take}/part-${String(index).padStart(5, "0")}.${extension}`,
-    [sessionId, uid],
+      `${folderFor(take)}/part-${String(index).padStart(5, "0")}.${extension}`,
+    [folderFor],
   );
 
   const start = useCallback(
@@ -133,7 +154,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
         const startedAtMs = Date.now();
         const takeSession: ActiveTake = {
           take,
-          recId: `${sessionId}_${uid}_t${take}`,
+          recId: `${sessionId}_${uid}${isScreen ? "_screen" : ""}_t${take}`,
           extension: options.extension,
           meta,
           recorder,
@@ -188,13 +209,16 @@ export function useLocalRecorder(sessionId: string, uid: string) {
           displayName: meta.displayName,
           role: meta.role,
           startedAtMs,
+          kind: variant,
+          folder: folderFor(take),
+          docId: docIdFor(take),
         }).catch(() => {});
       } catch (err) {
         setStatus("error");
         setError(err instanceof Error ? err.message : "Failed to start recording");
       }
     },
-    [sessionId, uid, uploadChunk, chunkPathFor],
+    [sessionId, uid, isScreen, variant, uploadChunk, chunkPathFor, folderFor, docIdFor],
   );
 
   const stopAndUpload = useCallback((): Promise<void> => {
@@ -238,11 +262,13 @@ export function useLocalRecorder(sessionId: string, uid: string) {
           throw new Error(`${pending.length} chunk(s) failed to upload after retries`);
         }
 
-        await setDoc(doc(db, "sessions", sessionId, "recordings", `${uid}_take${takeSession.take}`), {
+        await setDoc(doc(db, "sessions", sessionId, "recordings", docIdFor(takeSession.take)), {
           uid,
           take: takeSession.take,
           displayName: takeSession.meta.displayName,
           role: takeSession.meta.role,
+          kind: variant,
+          folder: folderFor(takeSession.take),
           chunkCount: takeSession.chunkCount,
           totalBytes: takeSession.totalBytes,
           mimeType: recorder.mimeType || "video/webm",
@@ -261,7 +287,7 @@ export function useLocalRecorder(sessionId: string, uid: string) {
 
     stopPromiseRef.current = promise;
     return promise;
-  }, [sessionId, uid, uploadChunk, chunkPathFor]);
+  }, [sessionId, uid, variant, uploadChunk, chunkPathFor, folderFor, docIdFor]);
 
   return { status, error, progress, start, stopAndUpload };
 }

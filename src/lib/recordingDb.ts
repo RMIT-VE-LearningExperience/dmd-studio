@@ -66,6 +66,11 @@ export type TakeMeta = {
   displayName: string;
   role: string;
   startedAtMs: number;
+  // Absent on metas written before screen recording existed — the resume
+  // flow falls back to the camera-take conventions.
+  kind?: string;
+  folder?: string;
+  docId?: string;
 };
 
 export async function saveTakeMeta(meta: TakeMeta) {

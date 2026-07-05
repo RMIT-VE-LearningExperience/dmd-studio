@@ -48,6 +48,18 @@ service cloud.firestore {
         }
       }
 
+      match /chat/{msgId} {
+        // Any participant can read and post as themselves; messages are
+        // immutable once sent (host teardown deletes the whole collection).
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+        allow delete: if isSessionHost();
+      }
+
       match /episodes/{episodeId} {
         // Host requests an episode by creating the doc; the Cloud Function
         // (Admin SDK, bypasses rules) writes progress/results back onto it.
@@ -57,14 +69,15 @@ service cloud.firestore {
 
       match /recordings/{recId} {
         // Written once a participant's chunk uploads are confirmed complete.
-        // Doc IDs are `{uid}_take{n}` so each take is its own record; only
-        // the participant who owns the uid prefix may write it, and only the
-        // session host (or the owner) may delete it.
+        // Doc IDs are `{uid}_take{n}` (or `{uid}_screen_take{n}` for screen
+        // recordings) so each track is its own record; only the participant
+        // who owns the uid prefix may write it, and only the session host
+        // (or the owner) may delete it.
         allow read: if request.auth != null;
         allow create, update: if request.auth != null
-          && recId.matches(request.auth.uid + '_take[0-9]+');
+          && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+');
         allow delete: if isSessionHost()
-          || (request.auth != null && recId.matches(request.auth.uid + '_take[0-9]+'));
+          || (request.auth != null && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
       }
     }
   }

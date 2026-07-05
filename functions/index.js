@@ -38,7 +38,8 @@ exports.composeRecording = onDocumentCreated(
     const extension = data.extension ?? "webm";
 
     const bucket = getStorage().bucket(BUCKET);
-    const prefix = `recordings/${sessionId}/${uid}/take-${take}/`;
+    // Screen tracks (and any future variants) carry their own folder.
+    const prefix = data.folder ? `${data.folder}/` : `recordings/${sessionId}/${uid}/take-${take}/`;
     const [files] = await bucket.getFiles({ prefix });
     const parts = files
       .filter((f) => f.name.split("/").pop().startsWith("part-"))
@@ -158,6 +159,8 @@ exports.extractAudio = onDocumentUpdated(
     // Fires on every recording-doc update — only act on the one transition
     // that matters: compose finished, audio not yet extracted.
     if (!after.composedPath || after.audioPath) return;
+    // Screen recordings are video-only: nothing to extract or transcribe.
+    if (after.kind === "screen") return;
 
     const { sessionId, recId } = event.params;
     const bucket = getStorage().bucket(BUCKET);
@@ -315,10 +318,11 @@ exports.produceEpisode = onDocumentCreated(
       if (tracks.length === 0) throw new Error("No composed tracks found for this take");
       if (tracks.length > 4) throw new Error("Episodes support at most 4 tracks");
 
-      // Host first, then guests alphabetically — stable tile order.
-      tracks.sort((a, b) =>
-        a.role === "host" ? -1 : b.role === "host" ? 1
-          : (a.displayName || "").localeCompare(b.displayName || ""));
+      // Host first, then guests alphabetically, screen tracks last —
+      // stable tile order.
+      const sortKey = (t) =>
+        `${t.kind === "screen" ? "1" : "0"}_${t.role === "host" ? "0" : "1"}_${t.displayName || ""}`;
+      tracks.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
 
       // Align tracks on the earliest recorder start; tracks without a
       // startedAtMs (pre-sync recordings) start at zero.
@@ -343,13 +347,17 @@ exports.produceEpisode = onDocumentCreated(
           `fps=30,scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
           `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` +
           (off > 0 ? `,tpad=start_duration=${off.toFixed(3)}:start_mode=add:color=black` : "");
-        const af =
-          (off > 0 ? `adelay=${Math.round(off * 1000)}:all=1,` : "") + "aresample=48000";
+        // Screen tracks are video-only — give them silent audio so the
+        // final amix sees a uniform set of inputs.
+        const isScreen = tracks[i].kind === "screen";
+        const audioArgs = isScreen
+          ? ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest", "-map", "0:v", "-map", "1:a"]
+          : ["-af", (off > 0 ? `adelay=${Math.round(off * 1000)}:all=1,` : "") + "aresample=48000"];
         await runFfmpegArgs(
           [
             "-i", "pipe:0",
+            ...audioArgs,
             "-vf", vf,
-            "-af", af,
             "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "192k",
             tilePath,

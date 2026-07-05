@@ -25,6 +25,8 @@ type RecordingDoc = {
   take: number;
   displayName: string;
   role: string;
+  kind: string;
+  folder: string | null;
   chunkCount: number;
   totalBytes: number;
   mimeType: string;
@@ -60,7 +62,10 @@ function formatDate(ts: Timestamp | null) {
 }
 
 async function listSortedParts(sessionId: string, rec: RecordingDoc): Promise<StorageReference[]> {
-  const folder = storageRef(storage, `recordings/${sessionId}/${rec.uid}/take-${rec.take}`);
+  const folder = storageRef(
+    storage,
+    rec.folder ?? `recordings/${sessionId}/${rec.uid}/take-${rec.take}`,
+  );
   const listing = await listAll(folder);
   // The folder may also hold the composed full file — only part-* chunks
   // belong in a stitch.
@@ -395,7 +400,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
     if (!sure) return;
     setDeleting(true);
     try {
-      await deleteRecording(sessionId, rec.uid, rec.take);
+      await deleteRecording(sessionId, rec.uid, rec.take, rec.folder, rec.id);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Failed to delete recording.");
       setDeleting(false);
@@ -409,6 +414,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
           <p className="text-sm font-semibold">
             {rec.displayName || "Unknown"}{" "}
             <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
+            {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
@@ -511,7 +517,7 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
     setDeleting(true);
     try {
       // The row disappears via the recordings onSnapshot once the doc is gone.
-      await deleteRecording(sessionId, rec.uid, rec.take);
+      await deleteRecording(sessionId, rec.uid, rec.take, rec.folder, rec.id);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Failed to delete recording.");
       setDeleting(false);
@@ -536,6 +542,7 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
           <p className="text-sm font-semibold">
             {rec.displayName || "Unknown"}{" "}
             <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
+            {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
@@ -632,6 +639,8 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             take: (data.take as number) ?? 1,
             displayName: (data.displayName as string) ?? "",
             role: (data.role as string) ?? "guest",
+            kind: (data.kind as string) ?? "camera",
+            folder: (data.folder as string) ?? null,
             chunkCount: (data.chunkCount as number) ?? 0,
             totalBytes: (data.totalBytes as number) ?? 0,
             mimeType: (data.mimeType as string) ?? "video/webm",

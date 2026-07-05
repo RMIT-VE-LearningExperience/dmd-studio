@@ -44,16 +44,17 @@ async function doResume(
 
   for (let i = 0; i < metas.length; i++) {
     const meta = metas[i];
+    const folderPath = meta.folder ?? `recordings/${sessionId}/${uid}/take-${meta.take}`;
 
     for (const { index, blob } of pendingByTake[i]) {
-      const path = `recordings/${sessionId}/${uid}/take-${meta.take}/part-${String(index).padStart(5, "0")}.${meta.extension}`;
+      const path = `${folderPath}/part-${String(index).padStart(5, "0")}.${meta.extension}`;
       await uploadBytes(storageRef(storage, path), blob);
       await deleteChunk(meta.recId, index);
       done += 1;
       onProgress?.(done, totalChunks);
     }
 
-    const folder = storageRef(storage, `recordings/${sessionId}/${uid}/take-${meta.take}`);
+    const folder = storageRef(storage, folderPath);
     const listing = await listAll(folder);
 
     if (listing.items.length === 0) {
@@ -65,11 +66,13 @@ async function doResume(
 
     const sizes = await Promise.all(listing.items.map((item) => getMetadata(item).then((m) => m.size)));
 
-    await setDoc(doc(db, "sessions", sessionId, "recordings", `${uid}_take${meta.take}`), {
+    await setDoc(doc(db, "sessions", sessionId, "recordings", meta.docId ?? `${uid}_take${meta.take}`), {
       uid,
       take: meta.take,
       displayName: meta.displayName,
       role: meta.role,
+      kind: meta.kind ?? "camera",
+      folder: folderPath,
       chunkCount: listing.items.length,
       totalBytes: sizes.reduce((a, b) => a + b, 0),
       mimeType: meta.mimeType,
