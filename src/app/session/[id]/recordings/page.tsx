@@ -9,10 +9,9 @@ import {
   doc,
   getDoc,
   onSnapshot,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   Timestamp,
 } from "firebase/firestore";
 import { ref as storageRef, listAll, getBlob, getDownloadURL, type StorageReference } from "firebase/storage";
@@ -32,6 +31,8 @@ type RecordingDoc = {
   totalBytes: number;
   mimeType: string;
   extension: string;
+  startedAtMs: number | null;
+  uploadState: "recording" | "uploading" | "complete";
   completedAt: Timestamp | null;
   composedPath: string | null;
   audioPath: string | null;
@@ -274,6 +275,68 @@ function EpisodeRow({ sessionId, episode }: { sessionId: string; episode: Episod
   );
 }
 
+// A take that's still recording or whose upload hasn't confirmed complete.
+// If the participant's tab died mid-upload, the host can finalize the track:
+// flipping uploadState to "complete" lets the compose function assemble
+// whatever chunks made it to Storage.
+function InProgressRow({
+  sessionId,
+  rec,
+  isHost,
+}: {
+  sessionId: string;
+  rec: RecordingDoc;
+  isHost: boolean;
+}) {
+  const [finalizing, setFinalizing] = useState(false);
+
+  const finalize = async () => {
+    const sure = window.confirm(
+      `Finalize ${rec.displayName || rec.role}'s track now? Do this only if they're gone and the upload looks stuck — the recording will contain everything uploaded so far.`,
+    );
+    if (!sure) return;
+    setFinalizing(true);
+    try {
+      await updateDoc(doc(db, "sessions", sessionId, "recordings", rec.id), {
+        uploadState: "complete",
+      });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Failed to finalize.");
+      setFinalizing(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-amber-900/50 bg-neutral-900 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">
+            {rec.displayName || "Unknown"}{" "}
+            <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
+            {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
+            {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
+          </p>
+          <p className="text-xs text-amber-400/90">
+            {rec.uploadState === "recording"
+              ? "Recording in progress — the track appears here as it uploads."
+              : "Upload in progress on their device — waiting for it to finish."}
+          </p>
+        </div>
+        {isHost && (
+          <button
+            onClick={finalize}
+            disabled={finalizing}
+            title="Assemble the track from the chunks uploaded so far"
+            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-amber-500 hover:text-amber-300 disabled:opacity-50"
+          >
+            {finalizing ? "Finalizing…" : "Finalize now"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TranscriptPanel({ rec }: { rec: RecordingDoc }) {
   const [copied, setCopied] = useState(false);
 
@@ -420,7 +483,8 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
-            {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)} · .{rec.extension}
+            {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)}
+            {rec.chunkCount > 0 && ` · ~${formatDuration(rec.chunkCount * 5)}`} · .{rec.extension}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -549,7 +613,8 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
-            {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)} · .{rec.extension}
+            {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)}
+            {rec.chunkCount > 0 && ` · ~${formatDuration(rec.chunkCount * 5)}`} · .{rec.extension}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -631,8 +696,9 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, "sessions", id, "recordings"), orderBy("completedAt", "desc"));
-    return onSnapshot(q, (snap) => {
+    // No orderBy: in-progress docs have no completedAt yet and a server-side
+    // order would silently drop them. Sorted client-side below.
+    return onSnapshot(collection(db, "sessions", id, "recordings"), (snap) => {
       setRecordings(
         snap.docs.map((d) => {
           const data = d.data();
@@ -645,6 +711,8 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             kind: (data.kind as string) ?? "camera",
             folder: (data.folder as string) ?? null,
             audioOnly: (data.audioOnly as boolean) ?? false,
+            startedAtMs: (data.startedAtMs as number) ?? null,
+            uploadState: (data.uploadState as RecordingDoc["uploadState"]) ?? "complete",
             chunkCount: (data.chunkCount as number) ?? 0,
             totalBytes: (data.totalBytes as number) ?? 0,
             mimeType: (data.mimeType as string) ?? "video/webm",
@@ -655,7 +723,12 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             transcript: (data.transcript as string) ?? null,
             transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,
           };
-        }),
+        })
+          .sort(
+            (a, b) =>
+              (b.completedAt?.toMillis() ?? b.startedAtMs ?? 0) -
+              (a.completedAt?.toMillis() ?? a.startedAtMs ?? 0),
+          ),
       );
     });
   }, [user, id]);
@@ -773,7 +846,9 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
         ) : (
           <div className="flex flex-col gap-4">
             {recordings.map((rec) =>
-              rec.composedPath ? (
+              rec.uploadState !== "complete" && !rec.composedPath ? (
+                <InProgressRow key={rec.id} sessionId={id} rec={rec} isHost={isHost} />
+              ) : rec.composedPath ? (
                 <ComposedRecordingRow key={rec.id} sessionId={id} rec={rec} />
               ) : (
                 <RecordingRow key={rec.id} sessionId={id} rec={rec} />

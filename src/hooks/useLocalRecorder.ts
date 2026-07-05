@@ -205,6 +205,28 @@ export function useLocalRecorder(
         setError(null);
         setStatus("recording");
 
+        // Provisional recording doc, written the moment the take starts —
+        // if this tab dies mid-take the host still sees the track exists
+        // and can finalize whatever chunks made it to Storage. The compose
+        // function waits for uploadState "complete".
+        void setDoc(
+          doc(db, "sessions", sessionId, "recordings", docIdFor(take)),
+          {
+            uid,
+            take,
+            displayName: meta.displayName,
+            role: meta.role,
+            kind: variant,
+            folder: folderFor(take),
+            audioOnly: takeSession.audioOnly,
+            mimeType: recorder.mimeType || options.mimeType || "video/webm",
+            extension: takeSession.extension,
+            startedAtMs,
+            uploadState: "recording",
+          },
+          { merge: true },
+        ).catch(() => {});
+
         // Persisted until the completion doc is written — if the tab dies
         // mid-take, this record is what lets the next visit resume the upload.
         void saveTakeMeta({
@@ -247,6 +269,11 @@ export function useLocalRecorder(
         recorder.stop();
       });
       setStatus("finishing");
+      void setDoc(
+        doc(db, "sessions", sessionId, "recordings", docIdFor(takeSession.take)),
+        { uploadState: "uploading" },
+        { merge: true },
+      ).catch(() => {});
 
       try {
         await uploadQueueRef.current;
@@ -284,6 +311,7 @@ export function useLocalRecorder(
           mimeType: recorder.mimeType || "video/webm",
           extension: takeSession.extension,
           startedAtMs: takeSession.startedAtMs,
+          uploadState: "complete",
           completedAt: serverTimestamp(),
         });
         await deleteTakeMeta(takeSession.recId);

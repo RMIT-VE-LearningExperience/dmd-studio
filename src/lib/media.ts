@@ -1,9 +1,11 @@
-// Session-level capture settings the host controls; applied when a
-// participant acquires their devices in the lobby.
+// Session-level settings the host controls. Capture fields apply when a
+// participant acquires their devices in the lobby; autoAdmit is enforced by
+// the join flow and security rules.
 export type CaptureSettings = {
   // Height cap for the camera (2160 = source/4K, 1080, 720). Absent = source.
   maxHeight?: number | null;
   audioOnly?: boolean;
+  autoAdmit?: boolean;
 };
 
 // `ideal` constraints never throw — the browser just returns the closest

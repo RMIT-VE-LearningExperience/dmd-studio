@@ -9,6 +9,13 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/sessions/$(sessionId)).data.hostUid == request.auth.uid;
       }
 
+      // When the host enables auto-admit, guests skip the waiting room and
+      // may write their own admission as "admitted".
+      function autoAdmitOn() {
+        return get(/databases/$(database)/documents/sessions/$(sessionId))
+          .data.get('settings', {}).get('autoAdmit', false) == true;
+      }
+
       // Host creates the session; anyone with the link can read/join it
       // (guests/producers are unauthenticated apart from anonymous auth).
       allow read: if request.auth != null;
@@ -24,15 +31,20 @@ service cloud.firestore {
         // The host may write any participant doc — that's how admit/deny
         // (and project teardown) work.
         allow write: if isSessionHost();
-        // A participant may create their own doc, but can never self-admit…
+        // A participant may create their own doc, but can never self-admit
+        // (unless the host turned auto-admit on) and never self-deny.
         allow create: if request.auth != null && request.auth.uid == uid
-          && request.resource.data.get('admission', 'pending') != 'admitted'
-          && request.resource.data.get('admission', 'pending') != 'denied';
-        // …and later self-updates may only leave admission untouched or
-        // knock again ('pending') — flipping to admitted/denied is host-only.
+          && request.resource.data.get('admission', 'pending') != 'denied'
+          && (request.resource.data.get('admission', 'pending') != 'admitted' || autoAdmitOn());
+        // …and later self-updates may only leave admission untouched, knock
+        // again ('pending'), or self-admit under auto-admit — but a denied
+        // (removed) participant can't auto-admit themselves back in.
         allow update: if request.auth != null && request.auth.uid == uid
           && (request.resource.data.get('admission', '') == resource.data.get('admission', '')
-              || request.resource.data.get('admission', '') == 'pending');
+              || request.resource.data.get('admission', '') == 'pending'
+              || (request.resource.data.get('admission', '') == 'admitted'
+                  && autoAdmitOn()
+                  && resource.data.get('admission', '') != 'denied'));
       }
 
       match /connections/{pairId} {
@@ -48,6 +60,14 @@ service cloud.firestore {
         match /answerCandidates/{candidateId} {
           allow read, create, delete: if request.auth != null;
         }
+      }
+
+      match /scripts/{uid} {
+        // Per-participant teleprompter script. The owner manages their own;
+        // the host may also write one for a guest.
+        allow read: if request.auth != null;
+        allow write: if request.auth != null
+          && (request.auth.uid == uid || isSessionHost());
       }
 
       match /chat/{msgId} {
@@ -75,9 +95,12 @@ service cloud.firestore {
         // recordings) so each track is its own record; only the participant
         // who owns the uid prefix may write it, and only the session host
         // (or the owner) may delete it.
+        // The host may also update — that's how a dead participant's
+        // partial track gets finalized (uploadState flipped to "complete").
         allow read: if request.auth != null;
-        allow create, update: if request.auth != null
-          && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+');
+        allow create, update: if isSessionHost()
+          || (request.auth != null
+              && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
         allow delete: if isSessionHost()
           || (request.auth != null && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
       }

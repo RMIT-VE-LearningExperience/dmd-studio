@@ -79,6 +79,7 @@ async function doResume(
       mimeType: meta.mimeType,
       extension: meta.extension,
       startedAtMs: meta.startedAtMs,
+      uploadState: "complete",
       completedAt: serverTimestamp(),
     });
 

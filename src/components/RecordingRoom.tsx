@@ -22,6 +22,7 @@ import { useLocalRecorder } from "@/hooks/useLocalRecorder";
 import { getVideoResolutionLabel, type CaptureSettings } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import Lobby from "@/components/Lobby";
+import Teleprompter from "@/components/Teleprompter";
 
 // How long the on-screen countdown runs between the host pressing Record
 // and recorders actually starting, shared by all participants.
@@ -491,6 +492,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [notice, setNotice] = useState<string | null>(null);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [prompterOpen, setPrompterOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSeenCount, setChatSeenCount] = useState(0);
   const startedTakeRef = useRef(0);
@@ -689,13 +691,29 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       return;
     }
     // Guests and producers knock first and wait for the host to let them in.
-    // Anyone already admitted this session skips the queue on rejoin.
+    // Anyone already admitted this session skips the queue on rejoin, and
+    // when the host enabled auto-admit there's no queue at all (rules allow
+    // the self-admit only while that setting is on).
     const participantRef = doc(db, "sessions", sessionId, "participants", uid);
-    const existing = await getDoc(participantRef);
+    const [existing, sessionSnap] = await Promise.all([
+      getDoc(participantRef),
+      getDoc(doc(db, "sessions", sessionId)),
+    ]);
     if (existing.data()?.admission === "admitted") {
       await join(stream, chosenName);
       setJoined(true);
       return;
+    }
+    const autoAdmit = sessionSnap.data()?.settings?.autoAdmit === true;
+    if (autoAdmit && existing.data()?.admission !== "denied") {
+      try {
+        await setDoc(participantRef, { admission: "admitted" }, { merge: true });
+        await join(stream, chosenName);
+        setJoined(true);
+        return;
+      } catch {
+        // Setting flipped off between read and write — fall through to knock.
+      }
     }
     await setDoc(
       participantRef,
@@ -947,6 +965,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           {notice}
         </div>
       )}
+      {prompterOpen && (
+        <Teleprompter sessionId={sessionId} uid={uid} onClose={() => setPrompterOpen(false)} />
+      )}
       {settingsOpen && role === "host" && (
         <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
           <p className="text-xs font-semibold text-neutral-300">Recording settings</p>
@@ -982,6 +1003,21 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
               className="accent-indigo-500"
             />
             Audio-only session (podcast mode)
+          </label>
+          <label className="flex items-center gap-2 text-xs text-neutral-300">
+            <input
+              type="checkbox"
+              checked={!!sessionSettings.autoAdmit}
+              onChange={(e) =>
+                void setDoc(
+                  doc(db, "sessions", sessionId),
+                  { settings: { ...sessionSettings, autoAdmit: e.target.checked } },
+                  { merge: true },
+                ).catch(() => {})
+              }
+              className="accent-indigo-500"
+            />
+            Skip waiting room (auto-admit guests)
           </label>
           <p className="text-[11px] leading-relaxed text-neutral-500">
             Applies to participants when they join or rejoin the studio — people already in the
@@ -1114,6 +1150,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             title={localScreenStream ? "Stop sharing screen" : "Share screen"}
           >
             🖥
+          </ControlButton>
+
+          <ControlButton
+            onClick={() => setPrompterOpen((o) => !o)}
+            title={prompterOpen ? "Close script" : "Open script / teleprompter"}
+          >
+            📜
           </ControlButton>
 
           <div className="relative">

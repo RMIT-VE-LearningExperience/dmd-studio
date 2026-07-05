@@ -1,4 +1,8 @@
-const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const {
+  onDocumentCreated,
+  onDocumentUpdated,
+  onDocumentWritten,
+} = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getStorage } = require("firebase-admin/storage");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -19,7 +23,7 @@ const COMPOSE_LIMIT = 32;
 // reproduces the original recording exactly. The browser then streams the
 // single composed file instead of stitching dozens of chunks client-side,
 // which was slow and hit storage/retry-limit-exceeded on big takes.
-exports.composeRecording = onDocumentCreated(
+exports.composeRecording = onDocumentWritten(
   {
     document: "sessions/{sessionId}/recordings/{recId}",
     region: "us-central1",
@@ -27,10 +31,15 @@ exports.composeRecording = onDocumentCreated(
     timeoutSeconds: 300,
   },
   async (event) => {
-    const snap = event.data;
-    if (!snap) return;
+    const snap = event.data?.after;
+    if (!snap || !snap.exists) return;
     const data = snap.data();
     if (data.composedPath) return;
+    // Docs now exist from the moment a take starts (uploadState "recording"
+    // → "uploading" → "complete"); only compose once the uploader — or the
+    // host finalizing a dead participant's track — says it's complete.
+    // Docs from older clients have no uploadState and arrive complete.
+    if ((data.uploadState ?? "complete") !== "complete") return;
 
     const { sessionId, recId } = event.params;
     const uid = data.uid ?? recId.split("_take")[0];

@@ -45,7 +45,7 @@ export async function deleteProject(sessionId: string) {
     }
   }
 
-  for (const sub of ["participants", "connections", "episodes", "chat"]) {
+  for (const sub of ["participants", "connections", "episodes", "chat", "scripts"]) {
     const snap = await getDocs(collection(db, "sessions", sessionId, sub));
     await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
   }
