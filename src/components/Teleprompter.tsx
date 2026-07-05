@@ -15,6 +15,7 @@ type Props = {
 // refresh — or prepping days before the call — doesn't lose it.
 export default function Teleprompter({ sessionId, uid, onClose }: Props) {
   const [text, setText] = useState<string | null>(null); // null while loading
+  const [fromShared, setFromShared] = useState(false);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -26,19 +27,27 @@ export default function Teleprompter({ sessionId, uid, onClose }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    getDoc(doc(db, "sessions", sessionId, "scripts", uid))
-      .then((snap) => {
-        if (cancelled) return;
-        const saved = (snap.data()?.text as string) ?? "";
-        setText(saved);
-        setDraft(saved);
-        setEditing(!saved);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setText("");
-        setEditing(true);
-      });
+    (async () => {
+      let personal = "";
+      let shared = "";
+      try {
+        const snap = await getDoc(doc(db, "sessions", sessionId, "scripts", uid));
+        personal = (snap.data()?.text as string) ?? "";
+        if (!personal) {
+          // Fall back to the script the host prepared for the session.
+          const sharedSnap = await getDoc(doc(db, "sessions", sessionId, "scripts", "shared"));
+          shared = (sharedSnap.data()?.text as string) ?? "";
+        }
+      } catch {
+        // Neither readable — start with an empty editor.
+      }
+      if (cancelled) return;
+      const effective = personal || shared;
+      setFromShared(!personal && !!shared);
+      setText(effective);
+      setDraft(effective);
+      setEditing(!effective);
+    })();
     return () => {
       cancelled = true;
     };
@@ -73,6 +82,7 @@ export default function Teleprompter({ sessionId, uid, onClose }: Props) {
         updatedAt: serverTimestamp(),
       });
       setText(draft);
+      setFromShared(false);
       setEditing(false);
       if (scrollRef.current) scrollRef.current.scrollTop = 0;
     } catch {
@@ -99,7 +109,12 @@ export default function Teleprompter({ sessionId, uid, onClose }: Props) {
   return (
     <div className="fixed left-1/2 top-14 z-50 flex max-h-[55vh] w-full max-w-2xl -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-950/95 shadow-2xl backdrop-blur">
       <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-2.5">
-        <span className="mr-auto text-xs font-semibold text-neutral-300">Script</span>
+        <span className="mr-auto text-xs font-semibold text-neutral-300">
+          Script
+          {fromShared && !editing && (
+            <span className="ml-1.5 font-normal text-neutral-500">· provided by the host</span>
+          )}
+        </span>
         {!editing && text && (
           <>
             <button

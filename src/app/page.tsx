@@ -19,14 +19,23 @@ import {
 import { auth, db } from "@/lib/firebase";
 import { signInHost } from "@/lib/auth";
 import { deleteProject } from "@/lib/deletion";
+import PlannerCalendar from "@/components/PlannerCalendar";
+import ScriptModal from "@/components/ScriptModal";
 
 type Project = {
   id: string;
   title: string;
   createdAt: Timestamp | null;
+  scheduledAt: Timestamp | null;
   recordingCount: number;
   live: boolean;
 };
+
+// Local-time value for <input type="datetime-local">.
+function toDatetimeLocal(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function formatDate(ts: Timestamp | null) {
   if (!ts) return "Just now";
@@ -41,6 +50,9 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
+  const [schedulingId, setSchedulingId] = useState<string | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState("");
+  const [scriptProject, setScriptProject] = useState<Project | null>(null);
 
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
@@ -56,6 +68,7 @@ export default function Home() {
             id: docSnap.id,
             title: (data.title as string) || "Untitled",
             createdAt: (data.createdAt as Timestamp) ?? null,
+            scheduledAt: (data.scheduledAt as Timestamp) ?? null,
             recordingCount: countSnap.data().count,
             // The heartbeat refreshes lastLiveAt every minute while the host
             // is in the studio — a stale timestamp means the tab died
@@ -83,6 +96,50 @@ export default function Home() {
     });
     setCreating(false);
     router.push(`/session/${sessionRef.id}`);
+  };
+
+  // Calendar day click: plan a new session on that day (10:00 by default).
+  const createScheduled = async (date: Date) => {
+    if (!user) return;
+    const title = window.prompt(
+      `Plan a recording for ${date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — project title:`,
+    );
+    if (title === null) return;
+    const when = new Date(date);
+    when.setHours(10, 0, 0, 0);
+    await addDoc(collection(db, "sessions"), {
+      hostUid: user.uid,
+      title: title.trim() || "Untitled",
+      createdAt: serverTimestamp(),
+      scheduledAt: Timestamp.fromDate(when),
+      status: "created",
+    });
+  };
+
+  const startSchedule = (project: Project) => {
+    setSchedulingId(project.id);
+    const base =
+      project.scheduledAt?.toDate() ??
+      (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        d.setHours(10, 0, 0, 0);
+        return d;
+      })();
+    setScheduleDraft(toDatetimeLocal(base));
+  };
+
+  const commitSchedule = async (projectId: string) => {
+    setSchedulingId(null);
+    if (!scheduleDraft) return;
+    const when = new Date(scheduleDraft);
+    if (Number.isNaN(when.getTime())) return;
+    await updateDoc(doc(db, "sessions", projectId), { scheduledAt: Timestamp.fromDate(when) });
+  };
+
+  const clearSchedule = async (projectId: string) => {
+    setSchedulingId(null);
+    await updateDoc(doc(db, "sessions", projectId), { scheduledAt: null });
   };
 
   const startRename = (project: Project) => {
@@ -158,6 +215,22 @@ export default function Home() {
           </button>
         </header>
 
+        <PlannerCalendar
+          entries={projects.flatMap((p) =>
+            p.scheduledAt ? [{ id: p.id, title: p.title, scheduledAt: p.scheduledAt }] : [],
+          )}
+          onOpen={(id) => router.push(`/session/${id}`)}
+          onCreate={createScheduled}
+        />
+
+        {scriptProject && (
+          <ScriptModal
+            sessionId={scriptProject.id}
+            title={scriptProject.title}
+            onClose={() => setScriptProject(null)}
+          />
+        )}
+
         {projects.length === 0 ? (
           <p className="text-sm text-neutral-500">No projects yet — click &ldquo;New&rdquo; to record your first session.</p>
         ) : (
@@ -209,8 +282,66 @@ export default function Home() {
                         ? "Empty"
                         : `${project.recordingCount} Recording${project.recordingCount === 1 ? "" : "s"}`}
                     </span>
+                    {schedulingId === project.id ? (
+                      <div className="mt-1 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="datetime-local"
+                          autoFocus
+                          value={scheduleDraft}
+                          onChange={(e) => setScheduleDraft(e.target.value)}
+                          className="rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-xs text-neutral-100 outline-none"
+                        />
+                        <button
+                          onClick={() => commitSchedule(project.id)}
+                          className="rounded-full bg-indigo-600 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                        >
+                          Set
+                        </button>
+                        {project.scheduledAt && (
+                          <button
+                            onClick={() => clearSchedule(project.id)}
+                            className="text-[11px] text-neutral-500 underline hover:text-neutral-300"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      project.scheduledAt && (
+                        <span className="text-xs text-indigo-300">
+                          📅{" "}
+                          {project.scheduledAt.toDate().toLocaleString(undefined, {
+                            weekday: "short",
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      )
+                    )}
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startSchedule(project);
+                      }}
+                      title="Schedule this recording"
+                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+                    >
+                      Schedule
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setScriptProject(project);
+                      }}
+                      title="Prepare the session script"
+                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+                    >
+                      Script
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
