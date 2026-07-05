@@ -71,6 +71,7 @@ export type TakeMeta = {
   kind?: string;
   folder?: string;
   docId?: string;
+  audioOnly?: boolean;
 };
 
 export async function saveTakeMeta(meta: TakeMeta) {

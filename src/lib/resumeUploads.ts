@@ -73,6 +73,7 @@ async function doResume(
       role: meta.role,
       kind: meta.kind ?? "camera",
       folder: folderPath,
+      audioOnly: meta.audioOnly ?? false,
       chunkCount: listing.items.length,
       totalBytes: sizes.reduce((a, b) => a + b, 0),
       mimeType: meta.mimeType,

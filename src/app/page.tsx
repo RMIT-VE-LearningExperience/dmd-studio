@@ -57,7 +57,13 @@ export default function Home() {
             title: (data.title as string) || "Untitled",
             createdAt: (data.createdAt as Timestamp) ?? null,
             recordingCount: countSnap.data().count,
-            live: data.status === "live",
+            // The heartbeat refreshes lastLiveAt every minute while the host
+            // is in the studio — a stale timestamp means the tab died
+            // without a clean Leave, so don't show a stuck LIVE badge.
+            live:
+              data.status === "live" &&
+              data.lastLiveAt instanceof Timestamp &&
+              Date.now() - data.lastLiveAt.toMillis() < 3 * 60_000,
           };
         }),
       );

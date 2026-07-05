@@ -11,7 +11,7 @@ import {
   saveTakeMeta,
   deleteTakeMeta,
 } from "@/lib/recordingDb";
-import { pickRecorderOptions } from "@/lib/media";
+import { pickAudioRecorderOptions, pickRecorderOptions } from "@/lib/media";
 
 export type RecorderStatus =
   | "idle"
@@ -47,6 +47,9 @@ type ActiveTake = {
   // Wall-clock start, published with the completion doc — the episode
   // producer aligns everyone's tracks by these.
   startedAtMs: number;
+  // True when the recorded stream had no video track (audio-only session) —
+  // the episode producer substitutes a placeholder tile.
+  audioOnly: boolean;
 };
 
 const CHUNK_INTERVAL_MS = 5000;
@@ -148,7 +151,11 @@ export function useLocalRecorder(
       try {
         const track = stream.getVideoTracks()[0];
         const { width, height } = track?.getSettings() ?? {};
-        const options = pickRecorderOptions(width ?? 1280, height ?? 720);
+        // No video track means an audio-only session — different container
+        // candidates, no video bitrate.
+        const options = track
+          ? pickRecorderOptions(width ?? 1280, height ?? 720)
+          : pickAudioRecorderOptions();
 
         const recorder = new MediaRecorder(stream, options);
         const startedAtMs = Date.now();
@@ -161,6 +168,7 @@ export function useLocalRecorder(
           chunkCount: 0,
           totalBytes: 0,
           startedAtMs,
+          audioOnly: !track,
         };
 
         setProgress({ uploadedChunks: 0, totalChunks: 0, uploadedBytes: 0, totalBytes: 0 });
@@ -212,6 +220,7 @@ export function useLocalRecorder(
           kind: variant,
           folder: folderFor(take),
           docId: docIdFor(take),
+          audioOnly: takeSession.audioOnly,
         }).catch(() => {});
       } catch (err) {
         setStatus("error");
@@ -269,6 +278,7 @@ export function useLocalRecorder(
           role: takeSession.meta.role,
           kind: variant,
           folder: folderFor(takeSession.take),
+          audioOnly: takeSession.audioOnly,
           chunkCount: takeSession.chunkCount,
           totalBytes: takeSession.totalBytes,
           mimeType: recorder.mimeType || "video/webm",

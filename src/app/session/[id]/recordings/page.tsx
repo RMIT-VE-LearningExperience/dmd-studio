@@ -27,6 +27,7 @@ type RecordingDoc = {
   role: string;
   kind: string;
   folder: string | null;
+  audioOnly: boolean;
   chunkCount: number;
   totalBytes: number;
   mimeType: string;
@@ -415,6 +416,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
             {rec.displayName || "Unknown"}{" "}
             <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
             {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
+            {rec.audioOnly && <span className="font-normal text-neutral-500"> · Audio</span>}
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
@@ -543,6 +545,7 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
             {rec.displayName || "Unknown"}{" "}
             <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
             {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
+            {rec.audioOnly && <span className="font-normal text-neutral-500"> · Audio</span>}
             {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
           </p>
           <p className="text-xs text-neutral-500">
@@ -641,6 +644,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             role: (data.role as string) ?? "guest",
             kind: (data.kind as string) ?? "camera",
             folder: (data.folder as string) ?? null,
+            audioOnly: (data.audioOnly as boolean) ?? false,
             chunkCount: (data.chunkCount as number) ?? 0,
             totalBytes: (data.totalBytes as number) ?? 0,
             mimeType: (data.mimeType as string) ?? "video/webm",

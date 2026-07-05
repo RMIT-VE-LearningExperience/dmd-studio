@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 import {
   getBestUserMedia,
   getVideoResolutionLabel,
   listMediaDevices,
   friendlyMediaError,
+  type CaptureSettings,
   type MediaDeviceChoice,
 } from "@/lib/media";
 import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
@@ -58,15 +61,18 @@ function MicMeter({ stream }: { stream: MediaStream | null }) {
 }
 
 type Props = {
+  sessionId: string;
   role: ParticipantRole;
   initialName: string;
   onJoin: (stream: MediaStream, displayName: string) => void;
 };
 
-export default function Lobby({ role, initialName, onJoin }: Props) {
+export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const settingsRef = useRef<CaptureSettings>({});
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [settings, setSettings] = useState<CaptureSettings | null>(null);
   const [name, setName] = useState(initialName);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
   const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
@@ -79,11 +85,13 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
   const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string) => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     try {
-      const next = await getBestUserMedia(videoDeviceId, audioDeviceId);
+      const next = await getBestUserMedia(videoDeviceId, audioDeviceId, settingsRef.current);
       setError(null);
       streamRef.current = next;
       setStream(next);
-      setResolution(getVideoResolutionLabel(next));
+      setResolution(
+        settingsRef.current.audioOnly ? "Audio only" : getVideoResolutionLabel(next),
+      );
 
       const devices = await listMediaDevices();
       setCameras(devices.cameras);
@@ -99,18 +107,31 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
   const joinedRef = useRef(false);
 
   useEffect(() => {
-    // acquire() is async and doesn't touch state until after its first await
-    // (the getUserMedia permission prompt), so no synchronous setState occurs.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    acquire();
+    // The host's session-level capture settings (resolution cap, audio-only)
+    // must be known before the first getUserMedia call.
+    let cancelled = false;
+    (async () => {
+      let loaded: CaptureSettings = {};
+      try {
+        const snap = await getDoc(doc(db, "sessions", sessionId));
+        loaded = (snap.data()?.settings as CaptureSettings) ?? {};
+      } catch {
+        // No settings readable — fall back to defaults.
+      }
+      if (cancelled) return;
+      settingsRef.current = loaded;
+      setSettings(loaded);
+      acquire();
+    })();
     return () => {
+      cancelled = true;
       // On join, ownership of the stream transfers to the room — only stop
       // the camera if the user left the lobby without joining.
       if (!joinedRef.current) {
         streamRef.current?.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [acquire]);
+  }, [sessionId, acquire]);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream;
@@ -128,6 +149,12 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
       <div className="grid w-full max-w-4xl grid-cols-1 items-center gap-8 lg:grid-cols-[1.5fr_1fr]">
         <div className="relative aspect-video overflow-hidden rounded-2xl border border-neutral-800 bg-black">
           <video ref={videoRef} autoPlay muted playsInline className="h-full w-full -scale-x-100 object-contain" />
+          {settings?.audioOnly && stream && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <span className="text-4xl">🎙</span>
+              <span className="text-sm text-neutral-400">Audio-only session — no camera will be used</span>
+            </div>
+          )}
           {resolution && (
             <span className="absolute left-3 top-3 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur">
               {resolution}
@@ -136,7 +163,11 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
           )}
           {!stream && !error && (
             <span className="absolute inset-0 flex items-center justify-center text-sm text-neutral-500">
-              Requesting camera…
+              {settings === null
+                ? "Loading session settings…"
+                : settings.audioOnly
+                  ? "Requesting microphone…"
+                  : "Requesting camera…"}
             </span>
           )}
           {error && (
@@ -167,7 +198,7 @@ export default function Lobby({ role, initialName, onJoin }: Props) {
             />
           </label>
 
-          <label className="flex flex-col gap-1.5">
+          <label className={`flex flex-col gap-1.5 ${settings?.audioOnly ? "hidden" : ""}`}>
             <span className="text-xs font-medium text-neutral-500">Camera</span>
             <select
               value={cameraId}

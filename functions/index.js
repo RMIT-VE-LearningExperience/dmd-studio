@@ -343,27 +343,40 @@ exports.produceEpisode = onDocumentCreated(
         tmpFiles.push(tilePath);
         tilePaths.push(tilePath);
         const off = offsets[i];
-        const vf =
-          `fps=30,scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
-          `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` +
-          (off > 0 ? `,tpad=start_duration=${off.toFixed(3)}:start_mode=add:color=black` : "");
-        // Screen tracks are video-only — give them silent audio so the
-        // final amix sees a uniform set of inputs.
-        const isScreen = tracks[i].kind === "screen";
-        const audioArgs = isScreen
-          ? ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest", "-map", "0:v", "-map", "1:a"]
-          : ["-af", (off > 0 ? `adelay=${Math.round(off * 1000)}:all=1,` : "") + "aresample=48000"];
-        await runFfmpegArgs(
-          [
+        const af = (off > 0 ? `adelay=${Math.round(off * 1000)}:all=1,` : "") + "aresample=48000";
+        const encodeArgs = [
+          "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
+          "-c:a", "aac", "-b:a", "192k",
+          tilePath,
+        ];
+
+        let args;
+        if (tracks[i].audioOnly) {
+          // Audio-only takes get a plain dark tile as their video.
+          args = [
+            "-f", "lavfi", "-i", `color=c=0x27272a:s=${tw}x${th}:r=30`,
             "-i", "pipe:0",
-            ...audioArgs,
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "192k",
-            tilePath,
-          ],
-          bucket.file(tracks[i].composedPath).createReadStream(),
-        );
+            "-shortest",
+            "-map", "0:v", "-map", "1:a",
+            "-af", af,
+            "-vf", "format=yuv420p",
+            ...encodeArgs,
+          ];
+        } else {
+          const vf =
+            `fps=30,scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
+            `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` +
+            (off > 0 ? `,tpad=start_duration=${off.toFixed(3)}:start_mode=add:color=black` : "");
+          // Screen tracks are video-only — give them silent audio so the
+          // final amix sees a uniform set of inputs.
+          const audioArgs =
+            tracks[i].kind === "screen"
+              ? ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest", "-map", "0:v", "-map", "1:a"]
+              : ["-af", af];
+          args = ["-i", "pipe:0", ...audioArgs, "-vf", vf, ...encodeArgs];
+        }
+
+        await runFfmpegArgs(args, bucket.file(tracks[i].composedPath).createReadStream());
       }
 
       const durations = await Promise.all(tilePaths.map(ffprobeDuration));

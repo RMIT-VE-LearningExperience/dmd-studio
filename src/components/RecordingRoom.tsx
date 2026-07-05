@@ -19,7 +19,7 @@ import {
 import { db } from "@/lib/firebase";
 import { useWebRTCMesh, type ParticipantRole } from "@/hooks/useWebRTCMesh";
 import { useLocalRecorder } from "@/hooks/useLocalRecorder";
-import { getVideoResolutionLabel } from "@/lib/media";
+import { getVideoResolutionLabel, type CaptureSettings } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import Lobby from "@/components/Lobby";
 
@@ -489,6 +489,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
   const [removed, setRemoved] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSeenCount, setChatSeenCount] = useState(0);
   const startedTakeRef = useRef(0);
@@ -556,9 +558,24 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       // own countdown starts ticking immediately, before the server ack.
       const data = snap.data({ serverTimestamps: "estimate" });
       setRecordingFlag((data?.recording as RecordingFlag) ?? null);
+      setSessionSettings((data?.settings as CaptureSettings) ?? {});
     });
     return unsub;
   }, [sessionId]);
+
+  // Heartbeat while the host is in the studio, so the dashboard's LIVE badge
+  // can expire if the host's tab dies without a clean Leave.
+  useEffect(() => {
+    if (!joined || role !== "host") return;
+    const beat = setInterval(() => {
+      void setDoc(
+        doc(db, "sessions", sessionId),
+        { lastLiveAt: serverTimestamp() },
+        { merge: true },
+      ).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(beat);
+  }, [joined, role, sessionId]);
 
   useEffect(() => {
     if (!joined || !isRecordingParticipant) return;
@@ -903,7 +920,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             Recording uploaded ✓
           </div>
         )}
-        <Lobby role={role} initialName={displayName} onJoin={handleJoin} />
+        <Lobby sessionId={sessionId} role={role} initialName={displayName} onJoin={handleJoin} />
       </>
     );
   }
@@ -930,6 +947,48 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           {notice}
         </div>
       )}
+      {settingsOpen && role === "host" && (
+        <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
+          <p className="text-xs font-semibold text-neutral-300">Recording settings</p>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Max video quality</span>
+            <select
+              value={String(sessionSettings.maxHeight ?? 2160)}
+              onChange={(e) =>
+                void setDoc(
+                  doc(db, "sessions", sessionId),
+                  { settings: { ...sessionSettings, maxHeight: Number(e.target.value) } },
+                  { merge: true },
+                ).catch(() => {})
+              }
+              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500"
+            >
+              <option value="2160">Source (up to 4K)</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-neutral-300">
+            <input
+              type="checkbox"
+              checked={!!sessionSettings.audioOnly}
+              onChange={(e) =>
+                void setDoc(
+                  doc(db, "sessions", sessionId),
+                  { settings: { ...sessionSettings, audioOnly: e.target.checked } },
+                  { merge: true },
+                ).catch(() => {})
+              }
+              className="accent-indigo-500"
+            />
+            Audio-only session (podcast mode)
+          </label>
+          <p className="text-[11px] leading-relaxed text-neutral-500">
+            Applies to participants when they join or rejoin the studio — people already in the
+            call keep their current quality until they rejoin.
+          </p>
+        </div>
+      )}
       {inCountdown && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
           <span className="text-8xl font-bold tabular-nums text-white">{countdownSeconds}</span>
@@ -953,6 +1012,18 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </div>
         <div className="flex items-center gap-3">
           {role === "host" && <InvitePanel sessionId={sessionId} />}
+          {role === "host" && (
+            <button
+              onClick={() => setSettingsOpen((o) => !o)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                settingsOpen
+                  ? "border-indigo-500 text-indigo-300"
+                  : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
+              }`}
+            >
+              Settings
+            </button>
+          )}
           {role === "host" && (
             <Link
               href={`/session/${sessionId}/recordings`}

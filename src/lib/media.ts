@@ -1,28 +1,43 @@
+// Session-level capture settings the host controls; applied when a
+// participant acquires their devices in the lobby.
+export type CaptureSettings = {
+  // Height cap for the camera (2160 = source/4K, 1080, 720). Absent = source.
+  maxHeight?: number | null;
+  audioOnly?: boolean;
+};
+
 // `ideal` constraints never throw — the browser just returns the closest
 // resolution the camera actually supports, so asking for 4K here safely
 // degrades to whatever the device can do (720p webcam, etc).
 export async function getBestUserMedia(
   videoDeviceId?: string,
   audioDeviceId?: string,
+  settings?: CaptureSettings,
 ): Promise<MediaStream> {
+  const audio = {
+    ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
+    echoCancellation: true,
+    noiseSuppression: true,
+    channelCount: 2,
+  };
+
   try {
+    if (settings?.audioOnly) {
+      return await navigator.mediaDevices.getUserMedia({ audio, video: false });
+    }
+    const maxHeight = settings?.maxHeight ?? 2160;
     return await navigator.mediaDevices.getUserMedia({
       video: {
         ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
-        width: { ideal: 3840 },
-        height: { ideal: 2160 },
+        width: { ideal: Math.round((maxHeight * 16) / 9) },
+        height: { ideal: maxHeight },
         // Without this, some cameras/drivers report a swapped portrait mode
         // (e.g. 1080x1920) as the "closest" match to the width/height ideals
         // above — forcing 16:9 keeps the picked mode landscape.
         aspectRatio: { ideal: 16 / 9 },
         frameRate: { ideal: 30 },
       },
-      audio: {
-        ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
-        echoCancellation: true,
-        noiseSuppression: true,
-        channelCount: 2,
-      },
+      audio,
     });
   } catch (err) {
     // Permission errors must surface to the user; only constraint problems
@@ -31,7 +46,10 @@ export async function getBestUserMedia(
     if (err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
       throw err;
     }
-    return navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    return navigator.mediaDevices.getUserMedia({
+      video: !settings?.audioOnly,
+      audio: true,
+    });
   }
 }
 
@@ -95,10 +113,25 @@ export function getVideoResolutionLabel(stream: MediaStream): string {
 
 export type RecorderOptions = {
   mimeType: string;
-  videoBitsPerSecond: number;
+  videoBitsPerSecond?: number;
   audioBitsPerSecond: number;
   extension: string;
 };
+
+const AUDIO_MIME_CANDIDATES = [
+  { mimeType: "audio/mp4", extension: "m4a" }, // Safari
+  { mimeType: "audio/webm;codecs=opus", extension: "webm" },
+  { mimeType: "audio/webm", extension: "webm" },
+];
+
+// For audio-only sessions: no video track, so no video bitrate to pick.
+export function pickAudioRecorderOptions(): RecorderOptions {
+  const match =
+    AUDIO_MIME_CANDIDATES.find(
+      (c) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c.mimeType),
+    ) ?? { mimeType: "audio/webm", extension: "webm" };
+  return { ...match, audioBitsPerSecond: 192_000 };
+}
 
 const MIME_CANDIDATES = [
   { mimeType: "video/mp4;codecs=avc1.640028,mp4a.40.2", extension: "mp4" },
