@@ -98,7 +98,7 @@ export default function ProjectCard({ project, onScript }: Props) {
         </svg>
       </div>
       <div className="flex items-end justify-between gap-2 p-4">
-        <div className="flex flex-col gap-0.5">
+        <div className="flex min-w-0 flex-col gap-0.5">
           {project.live && (
             <span className="flex w-fit items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
@@ -166,60 +166,71 @@ export default function ProjectCard({ project, onScript }: Props) {
             )
           )}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              startSchedule();
-            }}
-            title="Schedule this recording"
-            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-          >
-            Schedule
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onScript(project);
-            }}
-            title="Prepare the session script"
-            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-          >
-            Script
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setRenaming(true);
-              setTitleDraft(project.title);
-            }}
-            title="Rename project"
-            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-          >
-            Rename
-          </button>
-          {project.recordingCount > 0 && (
+        <div
+          className="relative min-w-0 max-w-[min(100%,24rem)] shrink"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex max-w-full items-center justify-end gap-1.5 overflow-x-auto pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                router.push(`/session/${project.id}/recordings`);
+                startSchedule();
               }}
-              className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+              title="Schedule this recording"
+              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
             >
-              Recordings
+              Schedule
             </button>
-          )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              remove();
-            }}
-            disabled={deleting}
-            title="Delete project"
-            className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onScript(project);
+              }}
+              title="Prepare the session script"
+              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+            >
+              Script
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setRenaming(true);
+                setTitleDraft(project.title);
+              }}
+              title="Rename project"
+              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+            >
+              Rename
+            </button>
+            {project.recordingCount > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  router.push(`/session/${project.id}/recordings`);
+                }}
+                className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+              >
+                Recordings
+              </button>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                remove();
+              }}
+              disabled={deleting}
+              title="Delete project"
+              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
+          </div>
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 right-0 flex w-8 items-center justify-end bg-gradient-to-l from-neutral-900 via-neutral-900 to-transparent pr-1 text-lg leading-none text-neutral-500"
           >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
+            ...
+          </span>
         </div>
       </div>
     </div>
