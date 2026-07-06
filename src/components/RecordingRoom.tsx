@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { Camera, CameraOff, MessageCircle, Mic, MicOff, Monitor, ScrollText } from "lucide-react";
 import {
   addDoc,
   collection,
@@ -163,10 +164,11 @@ function ControlButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`flex h-11 w-11 items-center justify-center rounded-full border text-lg transition disabled:cursor-not-allowed disabled:opacity-50 ${
-        active === false
-          ? "border-red-500/60 bg-red-500/20 text-red-400"
-          : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-500"
+      aria-pressed={active}
+      className={`flex h-14 w-14 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        active === true
+          ? "border-neutral-500 bg-neutral-800 text-white"
+          : "border-neutral-700 bg-neutral-950 text-white hover:border-neutral-500 hover:bg-neutral-900"
       }`}
     >
       {children}
@@ -1138,30 +1140,43 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       <footer className="flex flex-col items-center gap-3">
         <div className="flex items-center gap-3">
           <ControlButton onClick={toggleMic} active={micOn} title={micOn ? "Mute microphone" : "Unmute microphone"}>
-            {micOn ? "🎙" : "🔇"}
+            {micOn ? (
+              <Mic aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+            ) : (
+              <MicOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+            )}
           </ControlButton>
           <ControlButton onClick={toggleCam} active={camOn} title={camOn ? "Turn camera off" : "Turn camera on"}>
-            {camOn ? "📷" : "🚫"}
+            {camOn ? (
+              <Camera aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+            ) : (
+              <CameraOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+            )}
           </ControlButton>
 
           <ControlButton
             onClick={toggleScreenShare}
-            active={localScreenStream ? false : undefined}
+            active={!!localScreenStream}
             title={localScreenStream ? "Stop sharing screen" : "Share screen"}
           >
-            🖥
+            <Monitor aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
           </ControlButton>
 
           <ControlButton
             onClick={() => setPrompterOpen((o) => !o)}
+            active={prompterOpen}
             title={prompterOpen ? "Close script" : "Open script / teleprompter"}
           >
-            📜
+            <ScrollText aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
           </ControlButton>
 
           <div className="relative">
-            <ControlButton onClick={() => setChatOpen((o) => !o)} title={chatOpen ? "Close chat" : "Open chat"}>
-              💬
+            <ControlButton
+              onClick={() => setChatOpen((o) => !o)}
+              active={chatOpen}
+              title={chatOpen ? "Close chat" : "Open chat"}
+            >
+              <MessageCircle aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             </ControlButton>
             {chatUnread > 0 && (
               <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] font-bold text-white">

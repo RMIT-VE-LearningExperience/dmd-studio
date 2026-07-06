@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
+import { Mic } from "lucide-react";
 import { db } from "@/lib/firebase";
 import {
   getBestUserMedia,
@@ -151,7 +152,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
           <video ref={videoRef} autoPlay muted playsInline className="h-full w-full -scale-x-100 object-contain" />
           {settings?.audioOnly && stream && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-              <span className="text-4xl">🎙</span>
+              <Mic aria-hidden="true" className="h-10 w-10 text-white" strokeWidth={1.8} />
               <span className="text-sm text-neutral-400">Audio-only session — no camera will be used</span>
             </div>
           )}
