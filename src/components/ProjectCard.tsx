@@ -86,26 +86,56 @@ export default function ProjectCard({ project, onScript }: Props) {
       onClick={() => router.push(`/session/${project.id}`)}
       className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 transition hover:border-neutral-700"
     >
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          router.push(`/session/${project.id}/recordings`);
-        }}
-        className="flex aspect-video items-center justify-center bg-neutral-800/60 transition hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-neutral-900"
-        aria-label={`Open recordings for ${project.title}`}
-        title="Open recordings"
-      >
-        <svg
-          className="h-10 w-10 text-neutral-600"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
+      <div className="relative">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            router.push(`/session/${project.id}/recordings`);
+          }}
+          className="flex aspect-video w-full items-center justify-center bg-neutral-800/60 transition hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-neutral-900"
+          aria-label={`Open recordings for ${project.title}`}
+          title="Open recordings"
         >
-          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-        </svg>
-      </button>
+          <svg
+            className="h-10 w-10 text-neutral-600"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            remove();
+          }}
+          disabled={deleting}
+          className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/80 text-neutral-400 shadow-lg backdrop-blur transition hover:border-red-500 hover:text-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label={`Delete ${project.title}`}
+          title="Delete project"
+        >
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M6 6l1 14h10l1-14" />
+            <path d="M10 11v5" />
+            <path d="M14 11v5" />
+          </svg>
+        </button>
+      </div>
       <div className="flex items-end justify-between gap-2 p-4">
         <div className="flex min-w-0 flex-col gap-0.5">
           {project.live && (
@@ -222,17 +252,6 @@ export default function ProjectCard({ project, onScript }: Props) {
                 Recordings
               </button>
             )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                remove();
-              }}
-              disabled={deleting}
-              title="Delete project"
-              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {deleting ? "Deleting..." : "Delete"}
-            </button>
           </div>
           <span
             aria-hidden="true"
