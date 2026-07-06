@@ -86,7 +86,16 @@ export default function ProjectCard({ project, onScript }: Props) {
       onClick={() => router.push(`/session/${project.id}`)}
       className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 transition hover:border-neutral-700"
     >
-      <div className="flex aspect-video items-center justify-center bg-neutral-800/60">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          router.push(`/session/${project.id}/recordings`);
+        }}
+        className="flex aspect-video items-center justify-center bg-neutral-800/60 transition hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-neutral-900"
+        aria-label={`Open recordings for ${project.title}`}
+        title="Open recordings"
+      >
         <svg
           className="h-10 w-10 text-neutral-600"
           viewBox="0 0 24 24"
@@ -96,7 +105,7 @@ export default function ProjectCard({ project, onScript }: Props) {
         >
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
         </svg>
-      </div>
+      </button>
       <div className="flex items-end justify-between gap-2 p-4">
         <div className="flex min-w-0 flex-col gap-0.5">
           {project.live && (
