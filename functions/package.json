@@ -2,6 +2,9 @@
   "name": "dmd-studio-functions",
   "private": true,
   "main": "index.js",
+  "scripts": {
+    "backfill:thumbnails": "node scripts/backfill-thumbnails.js"
+  },
   "engines": {
     "node": "20"
   },

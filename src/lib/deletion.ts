@@ -1,5 +1,5 @@
-import { deleteDoc, doc, Timestamp, updateDoc } from "firebase/firestore";
-import { ref as storageRef, listAll, deleteObject } from "firebase/storage";
+import { collection, deleteDoc, doc, getDocs } from "firebase/firestore";
+import { ref as storageRef, listAll, deleteObject, type StorageReference } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 
 // Deletes one track: every file in its Storage folder, then its Firestore
@@ -18,17 +18,43 @@ export async function deleteRecording(
   await deleteDoc(doc(db, "sessions", sessionId, "recordings", docId ?? `${uid}_take${take}`));
 }
 
-// Deleting a project from the dashboard is a soft delete: hide it immediately
-// and retain its data for 30 days so it can be recovered manually if needed.
-export async function deleteProject(sessionId: string) {
-  const archivedAt = new Date();
-  const archivedUntil = new Date(archivedAt);
-  archivedUntil.setDate(archivedUntil.getDate() + 30);
+async function deleteStorageTree(ref: StorageReference) {
+  const listing = await listAll(ref);
+  await Promise.all([
+    ...listing.items.map((item) => deleteObject(item).catch(() => {})),
+    ...listing.prefixes.map((prefix) => deleteStorageTree(prefix)),
+  ]);
+}
 
-  await updateDoc(doc(db, "sessions", sessionId), {
-    archivedAt: Timestamp.fromDate(archivedAt),
-    archivedUntil: Timestamp.fromDate(archivedUntil),
-    deleteAfter: Timestamp.fromDate(archivedUntil),
-    status: "archived",
-  });
+async function deleteCollection(path: string) {
+  const snap = await getDocs(collection(db, path));
+  await Promise.all(snap.docs.map((docSnap) => deleteDoc(docSnap.ref)));
+}
+
+async function deleteConnections(sessionId: string) {
+  const snap = await getDocs(collection(db, "sessions", sessionId, "connections"));
+  await Promise.all(
+    snap.docs.map(async (connection) => {
+      await Promise.all([
+        deleteCollection(`sessions/${sessionId}/connections/${connection.id}/offerCandidates`),
+        deleteCollection(`sessions/${sessionId}/connections/${connection.id}/answerCandidates`),
+      ]);
+      await deleteDoc(connection.ref);
+    }),
+  );
+}
+
+// Deletes a project permanently: all Storage objects first, then the session's
+// known subcollections, then the session doc itself.
+export async function deleteProject(sessionId: string) {
+  await deleteStorageTree(storageRef(storage, `recordings/${sessionId}`));
+  await Promise.all([
+    deleteCollection(`sessions/${sessionId}/participants`),
+    deleteConnections(sessionId),
+    deleteCollection(`sessions/${sessionId}/scripts`),
+    deleteCollection(`sessions/${sessionId}/chat`),
+    deleteCollection(`sessions/${sessionId}/episodes`),
+    deleteCollection(`sessions/${sessionId}/recordings`),
+  ]);
+  await deleteDoc(doc(db, "sessions", sessionId));
 }

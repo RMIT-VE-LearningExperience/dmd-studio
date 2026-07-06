@@ -5,7 +5,7 @@ const {
 } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getStorage } = require("firebase-admin/storage");
-const { getFirestore } = require("firebase-admin/firestore");
+const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { spawn } = require("node:child_process");
 const { unlink } = require("node:fs/promises");
 const path = require("node:path");
@@ -132,6 +132,75 @@ function runFfmpeg(inputStream, wavPath, flacPath) {
     inputStream,
   );
 }
+
+async function writeProcessedThumbnail(bucket, sourcePath, destinationPath, tmpName) {
+  const tmpPath = path.join(os.tmpdir(), tmpName);
+  const vf = "scale=360:640:force_original_aspect_ratio=increase,crop=360:640,format=yuvj420p";
+  const attempts = [
+    ["-i", "pipe:0", "-ss", "2", "-frames:v", "1", "-vf", vf, "-q:v", "3", tmpPath],
+    ["-i", "pipe:0", "-ss", "1", "-frames:v", "1", "-vf", vf, "-q:v", "3", tmpPath],
+    ["-i", "pipe:0", "-frames:v", "1", "-vf", vf, "-q:v", "3", tmpPath],
+  ];
+
+  try {
+    let lastError = null;
+    for (const args of attempts) {
+      try {
+        await runFfmpegArgs(args, bucket.file(sourcePath).createReadStream());
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (lastError) throw lastError;
+
+    await bucket.upload(tmpPath, {
+      destination: destinationPath,
+      metadata: {
+        contentType: "image/jpeg",
+        cacheControl: "public, max-age=300",
+      },
+    });
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+  }
+}
+
+exports.extractThumbnail = onDocumentUpdated(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "512MiB",
+    timeoutSeconds: 300,
+  },
+  async (event) => {
+    const after = event.data?.after?.data();
+    if (!after?.composedPath) return;
+    if (after.kind === "screen" || after.audioOnly) return;
+    if (after.thumbnailSource === "processed") return;
+
+    const { sessionId, recId } = event.params;
+    const bucket = getStorage().bucket(BUCKET);
+    const prefix = after.composedPath.slice(0, after.composedPath.lastIndexOf("/") + 1);
+    const thumbnailPath = `${prefix}processed-thumbnail.jpg`;
+
+    try {
+      await writeProcessedThumbnail(bucket, after.composedPath, thumbnailPath, `${sessionId}-${recId}-thumb.jpg`);
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        thumbnailPath,
+        thumbnailSource: "processed",
+        thumbnailUpdatedAt: FieldValue.serverTimestamp(),
+      });
+      console.log(`Extracted processed thumbnail for ${sessionId}/${recId}: ${thumbnailPath}`);
+    } catch (err) {
+      console.error(`Thumbnail extraction failed for ${sessionId}/${recId}:`, err);
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        thumbnailError: String(err.message ?? err),
+      });
+    }
+  },
+);
 
 function ffprobeDuration(filePath) {
   const ffprobePath = require("ffprobe-static").path;
