@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, updateDoc, Timestamp } from "firebase/firestore";
+import { CalendarDays, FileText, FolderOpen, Pencil, Trash2, Video } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { deleteProject } from "@/lib/deletion";
 import type { Project } from "@/hooks/useProjects";
@@ -97,15 +98,7 @@ export default function ProjectCard({ project, onScript }: Props) {
           aria-label={`Open recordings for ${project.title}`}
           title="Open recordings"
         >
-          <svg
-            className="h-10 w-10 text-neutral-600"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-          >
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-          </svg>
+          <FolderOpen aria-hidden="true" className="h-11 w-11 text-neutral-200/70" strokeWidth={1.5} />
         </button>
         <button
           type="button"
@@ -118,22 +111,7 @@ export default function ProjectCard({ project, onScript }: Props) {
           aria-label={`Delete ${project.title}`}
           title="Delete project"
         >
-          <svg
-            aria-hidden="true"
-            className="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M3 6h18" />
-            <path d="M8 6V4h8v2" />
-            <path d="M6 6l1 14h10l1-14" />
-            <path d="M10 11v5" />
-            <path d="M14 11v5" />
-          </svg>
+          <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
         </button>
       </div>
       <div className="flex items-end justify-between gap-2 p-4">
@@ -192,8 +170,8 @@ export default function ProjectCard({ project, onScript }: Props) {
             </div>
           ) : (
             project.scheduledAt && (
-              <span className="text-xs text-indigo-300">
-                📅{" "}
+              <span className="flex items-center gap-1 text-xs text-neutral-300">
+                <CalendarDays aria-hidden="true" className="h-3 w-3 text-neutral-400" strokeWidth={1.8} />
                 {project.scheduledAt.toDate().toLocaleString(undefined, {
                   weekday: "short",
                   month: "short",
@@ -216,8 +194,9 @@ export default function ProjectCard({ project, onScript }: Props) {
                 startSchedule();
               }}
               title="Schedule this recording"
-              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
             >
+              <CalendarDays aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
               Schedule
             </button>
             <button
@@ -226,8 +205,9 @@ export default function ProjectCard({ project, onScript }: Props) {
                 onScript(project);
               }}
               title="Prepare the session script"
-              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
             >
+              <FileText aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
               Script
             </button>
             <button
@@ -237,8 +217,9 @@ export default function ProjectCard({ project, onScript }: Props) {
                 setTitleDraft(project.title);
               }}
               title="Rename project"
-              className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
             >
+              <Pencil aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
               Rename
             </button>
             {project.recordingCount > 0 && (
@@ -247,8 +228,9 @@ export default function ProjectCard({ project, onScript }: Props) {
                   e.stopPropagation();
                   router.push(`/session/${project.id}/recordings`);
                 }}
-                className="shrink-0 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+                className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
               >
+                <Video aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
                 Recordings
               </button>
             )}
