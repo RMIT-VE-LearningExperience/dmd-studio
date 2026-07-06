@@ -5,7 +5,7 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import {
   addDoc,
   collection,
-  getCountFromServer,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -13,7 +13,14 @@ import {
   where,
   Timestamp,
 } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+import { getDownloadURL, ref as storageRef } from "firebase/storage";
+import { auth, db, storage } from "@/lib/firebase";
+
+export type ProjectPreview = {
+  id: string;
+  displayName: string;
+  thumbnailUrl: string;
+};
 
 export type Project = {
   id: string;
@@ -21,6 +28,7 @@ export type Project = {
   createdAt: Timestamp | null;
   scheduledAt: Timestamp | null;
   recordingCount: number;
+  previews: ProjectPreview[];
   live: boolean;
 };
 
@@ -51,15 +59,44 @@ export function useProjects() {
       const withCounts = await Promise.all(
         snap.docs.map(async (docSnap) => {
           const data = docSnap.data();
-          const countSnap = await getCountFromServer(
-            collection(db, "sessions", docSnap.id, "recordings"),
-          );
+          const recordingsSnap = await getDocs(collection(db, "sessions", docSnap.id, "recordings"));
+          const previewCandidates = recordingsSnap.docs
+            .map((recordingSnap) => {
+              const recording = recordingSnap.data();
+              return {
+                id: recordingSnap.id,
+                displayName: (recording.displayName as string) || "Participant",
+                kind: (recording.kind as string) || "camera",
+                thumbnailPath: (recording.thumbnailPath as string) || "",
+                completedAt: recording.completedAt instanceof Timestamp ? recording.completedAt.toMillis() : 0,
+                startedAtMs: (recording.startedAtMs as number) || 0,
+              };
+            })
+            .filter((recording) => recording.kind === "camera" && recording.thumbnailPath)
+            .sort((a, b) => (b.completedAt || b.startedAtMs) - (a.completedAt || a.startedAtMs))
+            .slice(0, 3);
+          const previews = (
+            await Promise.all(
+              previewCandidates.map(async (recording) => {
+                try {
+                  return {
+                    id: recording.id,
+                    displayName: recording.displayName,
+                    thumbnailUrl: await getDownloadURL(storageRef(storage, recording.thumbnailPath)),
+                  };
+                } catch {
+                  return null;
+                }
+              }),
+            )
+          ).filter((preview): preview is ProjectPreview => preview !== null);
           return {
             id: docSnap.id,
             title: (data.title as string) || "Untitled",
             createdAt: (data.createdAt as Timestamp) ?? null,
             scheduledAt: (data.scheduledAt as Timestamp) ?? null,
-            recordingCount: countSnap.data().count,
+            recordingCount: recordingsSnap.docs.length,
+            previews,
             // The heartbeat refreshes lastLiveAt every minute while the host
             // is in the studio — a stale timestamp means the tab died
             // without a clean Leave, so don't show a stuck LIVE badge.

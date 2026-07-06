@@ -100,7 +100,24 @@ export default function ProjectCard({ project, onScript }: Props) {
           aria-label={`Open recordings for ${project.title}`}
           title="Open recordings"
         >
-          <FolderOpen aria-hidden="true" className="h-11 w-11 text-neutral-200/70" strokeWidth={1.5} />
+          {project.previews.length > 0 ? (
+            <span className="flex h-full w-full bg-neutral-950">
+              {project.previews.map((preview) => (
+                <span
+                  key={preview.id}
+                  aria-label={preview.displayName}
+                  className="min-w-0 flex-1 overflow-hidden border-r border-neutral-950 last:border-r-0"
+                >
+                  <span
+                    className="block h-full w-full bg-cover bg-center transition duration-300 group-hover:scale-[1.03]"
+                    style={{ backgroundImage: `url(${preview.thumbnailUrl})` }}
+                  />
+                </span>
+              ))}
+            </span>
+          ) : (
+            <FolderOpen aria-hidden="true" className="h-11 w-11 text-neutral-200/70" strokeWidth={1.5} />
+          )}
         </button>
         <button
           type="button"

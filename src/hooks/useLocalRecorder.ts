@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ref as storageRef, uploadBytesResumable } from "firebase/storage";
+import { ref as storageRef, uploadBytes, uploadBytesResumable } from "firebase/storage";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { storage, db } from "@/lib/firebase";
 import {
@@ -53,6 +53,67 @@ type ActiveTake = {
 };
 
 const CHUNK_INTERVAL_MS = 5000;
+
+async function captureThumbnail(stream: MediaStream): Promise<Blob | null> {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return null;
+
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+
+  try {
+    await video.play();
+  } catch {
+    // Some browsers refuse play() without a DOM attachment; loadedmetadata
+    // still usually gives us enough to draw the current stream frame.
+  }
+
+  await new Promise<void>((resolve) => {
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      resolve();
+      return;
+    }
+    const timeout = window.setTimeout(resolve, 1200);
+    video.onloadeddata = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+  });
+
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  video.srcObject = null;
+  if (!sourceWidth || !sourceHeight) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 360;
+  canvas.height = 640;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const sourceRatio = sourceWidth / sourceHeight;
+  const targetRatio = canvas.width / canvas.height;
+  let sx = 0;
+  let sy = 0;
+  let sw = sourceWidth;
+  let sh = sourceHeight;
+
+  if (sourceRatio > targetRatio) {
+    sw = sourceHeight * targetRatio;
+    sx = (sourceWidth - sw) / 2;
+  } else {
+    sh = sourceWidth / targetRatio;
+    sy = (sourceHeight - sh) / 2;
+  }
+
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.82);
+  });
+}
 
 export type RecorderVariant = "camera" | "screen";
 
@@ -227,6 +288,23 @@ export function useLocalRecorder(
           { merge: true },
         ).catch(() => {});
 
+        if (!isScreen && !takeSession.audioOnly) {
+          const thumbnailPath = `${folderFor(take)}/thumbnail.jpg`;
+          void captureThumbnail(stream)
+            .then(async (thumbnail) => {
+              if (!thumbnail) return;
+              await uploadBytes(storageRef(storage, thumbnailPath), thumbnail, {
+                contentType: "image/jpeg",
+              });
+              await setDoc(
+                doc(db, "sessions", sessionId, "recordings", docIdFor(take)),
+                { thumbnailPath },
+                { merge: true },
+              );
+            })
+            .catch(() => {});
+        }
+
         // Persisted until the completion doc is written — if the tab dies
         // mid-take, this record is what lets the next visit resume the upload.
         void saveTakeMeta({
@@ -310,6 +388,9 @@ export function useLocalRecorder(
           totalBytes: takeSession.totalBytes,
           mimeType: recorder.mimeType || "video/webm",
           extension: takeSession.extension,
+          ...(!isScreen && !takeSession.audioOnly
+            ? { thumbnailPath: `${folderFor(takeSession.take)}/thumbnail.jpg` }
+            : {}),
           startedAtMs: takeSession.startedAtMs,
           uploadState: "complete",
           completedAt: serverTimestamp(),
@@ -325,7 +406,7 @@ export function useLocalRecorder(
 
     stopPromiseRef.current = promise;
     return promise;
-  }, [sessionId, uid, variant, uploadChunk, chunkPathFor, folderFor, docIdFor]);
+  }, [sessionId, uid, isScreen, variant, uploadChunk, chunkPathFor, folderFor, docIdFor]);
 
   return { status, error, progress, start, stopAndUpload };
 }
