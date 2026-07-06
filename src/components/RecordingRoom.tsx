@@ -928,6 +928,19 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }
   };
 
+  const waitForUpload = async () => {
+    if (recordingStatus === "recording") void stopAndUpload();
+    if (screenRecStatus === "recording") void stopScreenRec();
+    await leave();
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    setLocalStream(null);
+    setJoined(false);
+    setLeftAfterRecording(true);
+    setChatOpen(false);
+    setPrompterOpen(false);
+    setSettingsOpen(false);
+  };
+
   const uploadPercent =
     progress.totalBytes > 0
       ? Math.min(100, Math.round((progress.uploadedBytes / progress.totalBytes) * 100))
@@ -1034,6 +1047,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const tileCount = 1 + peers.length + screenPeers.length + (localScreenStream ? 1 : 0);
   const gridColsClass = tileCount > 2 ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2";
   const isRecordingActive = recordingFlag?.active ?? false;
+  const canWaitForUpload =
+    !isRecordingActive &&
+    (recordingStatus === "finishing" || screenRecStatus === "finishing");
 
   return (
     <div className="flex min-h-screen flex-col gap-6 bg-neutral-950 p-6 text-neutral-100">
@@ -1296,6 +1312,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           >
             {recordingStatus === "finishing" ? "Finishing upload…" : "Leave"}
           </button>
+          {canWaitForUpload && (
+            <button
+              onClick={waitForUpload}
+              className="flex h-11 items-center rounded-full border border-neutral-700 px-5 text-sm font-semibold text-neutral-200 transition hover:border-neutral-500 hover:text-white"
+            >
+              Wait while uploading
+            </button>
+          )}
         </div>
 
         {isRecordingParticipant && recordingStatus === "recording" && progress.totalBytes > 0 && (
