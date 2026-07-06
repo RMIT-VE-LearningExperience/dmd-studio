@@ -17,6 +17,7 @@ import {
 import { ref as storageRef, listAll, getBlob, getDownloadURL, type StorageReference } from "firebase/storage";
 import { auth, db, storage } from "@/lib/firebase";
 import { deleteRecording } from "@/lib/deletion";
+import AppNav from "@/components/AppNav";
 
 type RecordingDoc = {
   id: string;
@@ -792,11 +793,13 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
   }
 
   return (
-    <main className="min-h-screen bg-neutral-950 px-8 py-10 text-neutral-100">
+    <div className="min-h-screen bg-neutral-950 text-neutral-100">
+      <AppNav user={user} />
+      <main className="px-8 py-10">
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link href="/" className="text-sm text-neutral-500 hover:text-neutral-300">
+            <Link href="/projects" className="text-sm text-neutral-500 hover:text-neutral-300">
               ← Projects
             </Link>
             <h1 className="text-xl font-semibold">Recordings</h1>
@@ -857,6 +860,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
           </div>
         )}
       </div>
-    </main>
+      </main>
+    </div>
   );
 }

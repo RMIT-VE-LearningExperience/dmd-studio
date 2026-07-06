@@ -1,227 +1,140 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged, signOut, type User } from "firebase/auth";
-import {
-  collection,
-  addDoc,
-  doc,
-  updateDoc,
-  serverTimestamp,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  getCountFromServer,
-  Timestamp,
-} from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
-import { signInHost } from "@/lib/auth";
-import { deleteProject } from "@/lib/deletion";
-import PlannerCalendar from "@/components/PlannerCalendar";
+import { useProjects, createProject, type Project } from "@/hooks/useProjects";
+import AppNav from "@/components/AppNav";
+import SignInScreen from "@/components/SignInScreen";
+import ProjectCard from "@/components/ProjectCard";
 import ScriptModal from "@/components/ScriptModal";
-
-type Project = {
-  id: string;
-  title: string;
-  createdAt: Timestamp | null;
-  scheduledAt: Timestamp | null;
-  recordingCount: number;
-  live: boolean;
-};
-
-// Local-time value for <input type="datetime-local">.
-function toDatetimeLocal(d: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function formatDate(ts: Timestamp | null) {
-  if (!ts) return "Just now";
-  return ts.toDate().toLocaleDateString(undefined, { month: "long", day: "numeric" });
-}
 
 export default function Home() {
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const { user, authLoading, projects } = useProjects();
   const [creating, setCreating] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [titleDraft, setTitleDraft] = useState("");
-  const [schedulingId, setSchedulingId] = useState<string | null>(null);
-  const [scheduleDraft, setScheduleDraft] = useState("");
   const [scriptProject, setScriptProject] = useState<Project | null>(null);
+  // Captured once per mount — "upcoming" doesn't need to tick live.
+  const [now] = useState(() => Date.now());
 
-  useEffect(() => onAuthStateChanged(auth, setUser), []);
-
-  useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, "sessions"), where("hostUid", "==", user.uid), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(q, async (snap) => {
-      const withCounts = await Promise.all(
-        snap.docs.map(async (docSnap) => {
-          const data = docSnap.data();
-          const countSnap = await getCountFromServer(collection(db, "sessions", docSnap.id, "recordings"));
-          return {
-            id: docSnap.id,
-            title: (data.title as string) || "Untitled",
-            createdAt: (data.createdAt as Timestamp) ?? null,
-            scheduledAt: (data.scheduledAt as Timestamp) ?? null,
-            recordingCount: countSnap.data().count,
-            // The heartbeat refreshes lastLiveAt every minute while the host
-            // is in the studio — a stale timestamp means the tab died
-            // without a clean Leave, so don't show a stuck LIVE badge.
-            live:
-              data.status === "live" &&
-              data.lastLiveAt instanceof Timestamp &&
-              Date.now() - data.lastLiveAt.toMillis() < 3 * 60_000,
-          };
-        }),
-      );
-      setProjects(withCounts);
-    });
-    return unsub;
-  }, [user]);
-
-  const createProject = async () => {
-    if (!user) return;
-    setCreating(true);
-    const sessionRef = await addDoc(collection(db, "sessions"), {
-      hostUid: user.uid,
-      title: "Untitled",
-      createdAt: serverTimestamp(),
-      status: "created",
-    });
-    setCreating(false);
-    router.push(`/session/${sessionRef.id}`);
-  };
-
-  // Calendar day click: plan a new session on that day (10:00 by default).
-  const createScheduled = async (date: Date) => {
-    if (!user) return;
-    const title = window.prompt(
-      `Plan a recording for ${date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — project title:`,
-    );
-    if (title === null) return;
-    const when = new Date(date);
-    when.setHours(10, 0, 0, 0);
-    await addDoc(collection(db, "sessions"), {
-      hostUid: user.uid,
-      title: title.trim() || "Untitled",
-      createdAt: serverTimestamp(),
-      scheduledAt: Timestamp.fromDate(when),
-      status: "created",
-    });
-  };
-
-  const startSchedule = (project: Project) => {
-    setSchedulingId(project.id);
-    const base =
-      project.scheduledAt?.toDate() ??
-      (() => {
-        const d = new Date();
-        d.setDate(d.getDate() + 1);
-        d.setHours(10, 0, 0, 0);
-        return d;
-      })();
-    setScheduleDraft(toDatetimeLocal(base));
-  };
-
-  const commitSchedule = async (projectId: string) => {
-    setSchedulingId(null);
-    if (!scheduleDraft) return;
-    const when = new Date(scheduleDraft);
-    if (Number.isNaN(when.getTime())) return;
-    await updateDoc(doc(db, "sessions", projectId), { scheduledAt: Timestamp.fromDate(when) });
-  };
-
-  const clearSchedule = async (projectId: string) => {
-    setSchedulingId(null);
-    await updateDoc(doc(db, "sessions", projectId), { scheduledAt: null });
-  };
-
-  const startRename = (project: Project) => {
-    setRenamingId(project.id);
-    setTitleDraft(project.title);
-  };
-
-  const commitRename = async (projectId: string) => {
-    const title = titleDraft.trim();
-    setRenamingId(null);
-    if (!title) return;
-    await updateDoc(doc(db, "sessions", projectId), { title });
-  };
-
-  const removeProject = async (project: Project) => {
-    const sure = window.confirm(
-      project.recordingCount > 0
-        ? `Delete "${project.title}" and its ${project.recordingCount} recording${project.recordingCount === 1 ? "" : "s"}? This can't be undone.`
-        : `Delete "${project.title}"? This can't be undone.`,
-    );
-    if (!sure) return;
-    setDeletingId(project.id);
-    try {
-      await deleteProject(project.id);
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Failed to delete project.");
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
+  if (authLoading) {
+    return <p className="min-h-screen bg-neutral-950 p-6 text-neutral-500">Loading…</p>;
+  }
   if (!user) {
-    return (
-      <main className="flex min-h-screen justify-center bg-neutral-950 px-6 py-16 text-neutral-100">
-        <div className="flex w-full max-w-xl flex-col gap-6">
-          <div>
-            <h1 className="text-2xl font-semibold">DMD Studio</h1>
-            <p className="mt-2 text-sm text-neutral-400">
-              Record interview-style conversations with guests, locally in-browser,
-              for later playback and download.
-            </p>
-          </div>
-          <button
-            onClick={signInHost}
-            className="w-fit rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500"
-          >
-            Sign in with Google
-          </button>
-        </div>
-      </main>
-    );
+    return <SignInScreen />;
   }
 
+  const newProject = async () => {
+    setCreating(true);
+    const id = await createProject(user);
+    setCreating(false);
+    router.push(`/session/${id}`);
+  };
+
+  // Anything planned from an hour ago onwards counts as upcoming.
+  const upcoming = projects
+    .filter((p) => p.scheduledAt && p.scheduledAt.toMillis() > now - 3600_000)
+    .sort((a, b) => a.scheduledAt!.toMillis() - b.scheduledAt!.toMillis())
+    .slice(0, 4);
+  const recent = projects.slice(0, 6);
+
   return (
-    <main className="min-h-screen bg-neutral-950 px-8 py-10 text-neutral-100">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8">
+    <div className="min-h-screen bg-neutral-950 text-neutral-100">
+      <AppNav user={user} />
+      <main className="mx-auto flex max-w-6xl flex-col gap-10 px-8 py-10">
         <header className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold">Projects</h1>
+            <h1 className="text-2xl font-semibold">
+              Welcome back{user.displayName ? `, ${user.displayName.split(" ")[0]}` : ""}
+            </h1>
             <p className="mt-1 text-sm text-neutral-500">
-              Signed in as {user.displayName ?? user.email}{" "}
-              <button onClick={() => signOut(auth)} className="text-neutral-500 underline hover:text-neutral-300">
-                Sign out
-              </button>
+              Plan, record and review your interview sessions.
             </p>
           </div>
           <button
-            onClick={createProject}
+            onClick={newProject}
             disabled={creating}
             className="flex items-center gap-1.5 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            + New
+            + New recording
           </button>
         </header>
 
-        <PlannerCalendar
-          entries={projects.flatMap((p) =>
-            p.scheduledAt ? [{ id: p.id, title: p.title, scheduledAt: p.scheduledAt }] : [],
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-300">Upcoming recordings</h2>
+            <Link href="/calendar" className="text-xs text-indigo-400 hover:underline">
+              Open calendar →
+            </Link>
+          </div>
+          {upcoming.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-neutral-800 p-5 text-sm text-neutral-500">
+              Nothing planned yet — schedule a session from the{" "}
+              <Link href="/calendar" className="text-indigo-400 hover:underline">
+                calendar
+              </Link>{" "}
+              or a project card.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {upcoming.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex flex-wrap items-center gap-4 rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-3.5"
+                >
+                  <div className="flex w-32 flex-col">
+                    <span className="text-xs font-semibold text-indigo-300">
+                      {p.scheduledAt!.toDate().toLocaleDateString(undefined, {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </span>
+                    <span className="text-xs text-neutral-500">
+                      {p.scheduledAt!.toDate().toLocaleTimeString(undefined, {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                  <span className="mr-auto text-sm font-medium">{p.title}</span>
+                  <button
+                    onClick={() => setScriptProject(p)}
+                    className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+                  >
+                    Script
+                  </button>
+                  <Link
+                    href={`/session/${p.id}`}
+                    className="rounded-full bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                  >
+                    Enter studio
+                  </Link>
+                </div>
+              ))}
+            </div>
           )}
-          onOpen={(id) => router.push(`/session/${id}`)}
-          onCreate={createScheduled}
-        />
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-300">Recent projects</h2>
+            <Link href="/projects" className="text-xs text-indigo-400 hover:underline">
+              View all →
+            </Link>
+          </div>
+          {recent.length === 0 ? (
+            <p className="text-sm text-neutral-500">
+              No projects yet — click &ldquo;New recording&rdquo; to record your first session.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {recent.map((project) => (
+                <ProjectCard key={project.id} project={project} onScript={setScriptProject} />
+              ))}
+            </div>
+          )}
+        </section>
 
         {scriptProject && (
           <ScriptModal
@@ -230,157 +143,7 @@ export default function Home() {
             onClose={() => setScriptProject(null)}
           />
         )}
-
-        {projects.length === 0 ? (
-          <p className="text-sm text-neutral-500">No projects yet — click &ldquo;New&rdquo; to record your first session.</p>
-        ) : (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {projects.map((project) => (
-              <div
-                key={project.id}
-                onClick={() => router.push(`/session/${project.id}`)}
-                className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 transition hover:border-neutral-700"
-              >
-                <div className="flex aspect-video items-center justify-center bg-neutral-800/60">
-                  <svg
-                    className="h-10 w-10 text-neutral-600"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  >
-                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-                  </svg>
-                </div>
-                <div className="flex items-end justify-between gap-2 p-4">
-                  <div className="flex flex-col gap-0.5">
-                    {project.live && (
-                      <span className="flex w-fit items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-                        LIVE
-                      </span>
-                    )}
-                    {renamingId === project.id ? (
-                      <input
-                        autoFocus
-                        value={titleDraft}
-                        onChange={(e) => setTitleDraft(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onBlur={() => commitRename(project.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename(project.id);
-                          if (e.key === "Escape") setRenamingId(null);
-                        }}
-                        className="w-full rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-sm font-semibold text-neutral-100 outline-none"
-                      />
-                    ) : (
-                      <span className="text-sm font-semibold text-neutral-100">{project.title}</span>
-                    )}
-                    <span className="text-xs text-neutral-500">
-                      Created {formatDate(project.createdAt)} ·{" "}
-                      {project.recordingCount === 0
-                        ? "Empty"
-                        : `${project.recordingCount} Recording${project.recordingCount === 1 ? "" : "s"}`}
-                    </span>
-                    {schedulingId === project.id ? (
-                      <div className="mt-1 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="datetime-local"
-                          autoFocus
-                          value={scheduleDraft}
-                          onChange={(e) => setScheduleDraft(e.target.value)}
-                          className="rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-xs text-neutral-100 outline-none"
-                        />
-                        <button
-                          onClick={() => commitSchedule(project.id)}
-                          className="rounded-full bg-indigo-600 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
-                        >
-                          Set
-                        </button>
-                        {project.scheduledAt && (
-                          <button
-                            onClick={() => clearSchedule(project.id)}
-                            className="text-[11px] text-neutral-500 underline hover:text-neutral-300"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      project.scheduledAt && (
-                        <span className="text-xs text-indigo-300">
-                          📅{" "}
-                          {project.scheduledAt.toDate().toLocaleString(undefined, {
-                            weekday: "short",
-                            month: "short",
-                            day: "numeric",
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                      )
-                    )}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startSchedule(project);
-                      }}
-                      title="Schedule this recording"
-                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-                    >
-                      Schedule
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setScriptProject(project);
-                      }}
-                      title="Prepare the session script"
-                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-                    >
-                      Script
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startRename(project);
-                      }}
-                      title="Rename project"
-                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-                    >
-                      Rename
-                    </button>
-                    {project.recordingCount > 0 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          router.push(`/session/${project.id}/recordings`);
-                        }}
-                        className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
-                      >
-                        Recordings
-                      </button>
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeProject(project);
-                      }}
-                      disabled={deletingId === project.id}
-                      title="Delete project"
-                      className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {deletingId === project.id ? "Deleting…" : "Delete"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }

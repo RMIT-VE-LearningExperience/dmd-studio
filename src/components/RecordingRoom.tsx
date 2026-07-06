@@ -1033,7 +1033,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       )}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Link href="/" className="text-sm text-neutral-500 hover:text-neutral-300">
+          <Link href="/projects" className="text-sm text-neutral-500 hover:text-neutral-300">
             ← Projects
           </Link>
           <span className="text-sm font-medium text-neutral-400">
