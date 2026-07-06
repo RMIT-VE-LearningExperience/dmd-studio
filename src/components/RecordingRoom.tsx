@@ -492,6 +492,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
   const [removed, setRemoved] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prompterOpen, setPrompterOpen] = useState(false);
@@ -503,6 +504,46 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const canModerate = role === "host";
   const participantDocs = useParticipantDocs(sessionId, role === "host" || role === "producer");
   const pendingRequests = participantDocs.filter((p) => p.admission === "pending");
+
+  // A knock is easy to miss if the host is on another tab — chime once per
+  // new request and flash the tab title while anyone is waiting.
+  const prevKnockCountRef = useRef(0);
+  useEffect(() => {
+    if (!canModerate) return;
+    const count = pendingRequests.length;
+    if (count > prevKnockCountRef.current) {
+      try {
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.6);
+        osc.onended = () => void ctx.close();
+      } catch {
+        // Autoplay policy blocked it — the title flash still works.
+      }
+    }
+    prevKnockCountRef.current = count;
+  }, [canModerate, pendingRequests.length]);
+
+  useEffect(() => {
+    if (!canModerate || pendingRequests.length === 0) return;
+    const original = document.title;
+    let flip = false;
+    const interval = setInterval(() => {
+      document.title = flip ? original : `🔔 ${pendingRequests.length} waiting — ${original}`;
+      flip = !flip;
+    }, 1200);
+    return () => {
+      clearInterval(interval);
+      document.title = original;
+    };
+  }, [canModerate, pendingRequests.length]);
+
   const uploadRows = participantDocs.flatMap((p) => {
     if (p.uid === uid) return [];
     const who = p.displayName || p.uid.slice(0, 6);
@@ -875,6 +916,11 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     await leave();
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     setJoined(false);
+    // Guests who recorded something get a clear "you're done" screen rather
+    // than being dropped back into the device check.
+    if (isRecordingParticipant && role !== "host" && recordingStatus !== "idle") {
+      setLeftAfterRecording(true);
+    }
     if (role === "host") {
       void setDoc(doc(db, "sessions", sessionId), { status: "ended" }, { merge: true }).catch(
         () => {},
@@ -925,6 +971,46 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     );
   }
 
+  if (!joined && leftAfterRecording) {
+    const stillUploading = recordingStatus === "finishing" || screenRecStatus === "finishing";
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-neutral-950 p-6 text-center text-neutral-100">
+        {stillUploading ? (
+          <>
+            <p className="text-lg font-semibold">Finishing your upload…</p>
+            <div className="w-full max-w-xs">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                <div
+                  className="h-full rounded-full bg-indigo-500 transition-all"
+                  style={{ width: `${uploadPercent}%` }}
+                />
+              </div>
+              <p className="mt-1.5 text-xs text-neutral-500">
+                {uploadPercent}% — keep this tab open just a little longer
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-4xl">🎉</p>
+            <div className="flex flex-col gap-1">
+              <p className="text-lg font-semibold">You&rsquo;re all done — thank you!</p>
+              <p className="text-sm text-neutral-400">
+                Your recording {recordingStatus === "error" ? "had an upload problem — please rejoin so it can finish." : "is uploaded. It's now safe to close this tab."}
+              </p>
+            </div>
+          </>
+        )}
+        <button
+          onClick={() => setLeftAfterRecording(false)}
+          className="text-xs text-neutral-500 underline hover:text-neutral-300"
+        >
+          Rejoin the studio
+        </button>
+      </div>
+    );
+  }
+
   if (!joined) {
     return (
       <>
@@ -968,7 +1054,12 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </div>
       )}
       {prompterOpen && (
-        <Teleprompter sessionId={sessionId} uid={uid} onClose={() => setPrompterOpen(false)} />
+        <Teleprompter
+          sessionId={sessionId}
+          uid={uid}
+          recordingActive={isRecordingActive && !inCountdown}
+          onClose={() => setPrompterOpen(false)}
+        />
       )}
       {settingsOpen && role === "host" && (
         <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">

@@ -7,17 +7,21 @@ import { db } from "@/lib/firebase";
 type Props = {
   sessionId: string;
   uid: string;
+  // True while a take is actually rolling (countdown finished) — the script
+  // starts scrolling by itself so the reader's hands stay free.
+  recordingActive?: boolean;
   onClose: () => void;
 };
 
 // Per-participant script overlay: paste or load a .txt, then auto-scroll it
 // while recording. The script persists on the session (scripts/{uid}) so a
 // refresh — or prepping days before the call — doesn't lose it.
-export default function Teleprompter({ sessionId, uid, onClose }: Props) {
+export default function Teleprompter({ sessionId, uid, recordingActive, onClose }: Props) {
   const [text, setText] = useState<string | null>(null); // null while loading
   const [fromShared, setFromShared] = useState(false);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
+  const [prevActive, setPrevActive] = useState(!!recordingActive);
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(60); // pixels per second
@@ -52,6 +56,14 @@ export default function Teleprompter({ sessionId, uid, onClose }: Props) {
       cancelled = true;
     };
   }, [sessionId, uid]);
+
+  // Recording started/stopped since last render — start or stop scrolling
+  // (adjusting state during render per React's derived-state pattern).
+  if (!!recordingActive !== prevActive) {
+    setPrevActive(!!recordingActive);
+    if (recordingActive && text && !editing) setPlaying(true);
+    if (!recordingActive) setPlaying(false);
+  }
 
   // Auto-scroll loop; pauses itself at the end of the script.
   useEffect(() => {

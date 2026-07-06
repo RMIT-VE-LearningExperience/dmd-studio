@@ -9,6 +9,16 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/sessions/$(sessionId)).data.hostUid == request.auth.uid;
       }
 
+      // A participant the host has let in (or who self-admitted while
+      // auto-admit was on). Guards everything inside a session that only
+      // people actually in the room should touch.
+      function isAdmitted() {
+        return request.auth != null
+          && exists(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(request.auth.uid))
+          && get(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(request.auth.uid))
+            .data.get('admission', '') == 'admitted';
+      }
+
       // When the host enables auto-admit, guests skip the waiting room and
       // may write their own admission as "admitted".
       function autoAdmitOn() {
@@ -16,18 +26,26 @@ service cloud.firestore {
           .data.get('settings', {}).get('autoAdmit', false) == true;
       }
 
-      // Host creates the session; anyone with the link can read/join it
-      // (guests/producers are unauthenticated apart from anonymous auth).
-      allow read: if request.auth != null;
+      // Anyone with the invite link may open a specific session (guests are
+      // anonymous), but only the host can LIST sessions — without this split
+      // any anonymous visitor could enumerate every session in the app.
+      allow get: if request.auth != null;
+      allow list: if request.auth != null && resource.data.hostUid == request.auth.uid;
       allow create: if request.auth != null && request.resource.data.hostUid == request.auth.uid;
-      allow update: if request.auth != null;
+      // Only the host mutates the session doc (recording flag, settings,
+      // title, schedule, status, archive).
+      allow update: if request.auth != null && resource.data.hostUid == request.auth.uid;
       allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
 
       match /participants/{uid} {
         // Presence doc per participant, keyed by their auth uid — drives the
         // WebRTC mesh (who to connect to) plus the waiting room (`admission`)
         // and upload visibility (`upload`).
-        allow read: if request.auth != null;
+        // A participant can always watch their own doc (that's how they wait
+        // at the door); seeing everyone requires being host or admitted.
+        allow get: if request.auth != null
+          && (request.auth.uid == uid || isSessionHost() || isAdmitted());
+        allow list: if isSessionHost() || isAdmitted();
         // The host may write any participant doc — that's how admit/deny
         // (and project teardown) work.
         allow write: if isSessionHost();
@@ -48,34 +66,36 @@ service cloud.firestore {
       }
 
       match /connections/{pairId} {
-        // Per-pair signaling doc for the mesh; pairId has no bearing on auth,
-        // any signed-in session participant may read/write it.
-        allow read, write: if request.auth != null;
+        // Per-pair signaling docs for the mesh — only people in the room.
+        allow read, write: if isSessionHost() || isAdmitted();
 
         // Delete is allowed so participants can sweep their own dead
         // signaling docs on leave (and the host on project teardown).
         match /offerCandidates/{candidateId} {
-          allow read, create, delete: if request.auth != null;
+          allow read, create, delete: if isSessionHost() || isAdmitted();
         }
         match /answerCandidates/{candidateId} {
-          allow read, create, delete: if request.auth != null;
+          allow read, create, delete: if isSessionHost() || isAdmitted();
         }
       }
 
       match /scripts/{uid} {
         // Per-participant teleprompter script. The owner manages their own;
-        // the host may also write one for a guest.
-        allow read: if request.auth != null;
+        // the host may also write one for a guest (and preps the shared
+        // session script under the id "shared").
+        allow read: if request.auth != null
+          && (request.auth.uid == uid || isSessionHost() || isAdmitted());
         allow write: if request.auth != null
           && (request.auth.uid == uid || isSessionHost());
       }
 
       match /chat/{msgId} {
-        // Any participant can read and post as themselves; messages are
-        // immutable once sent (host teardown deletes the whole collection).
-        allow read: if request.auth != null;
+        // Only people in the room read or post; messages are immutable once
+        // sent (host teardown deletes the whole collection).
+        allow read: if isSessionHost() || isAdmitted();
         allow create: if request.auth != null
           && request.resource.data.uid == request.auth.uid
+          && (isSessionHost() || isAdmitted())
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000;
@@ -85,19 +105,18 @@ service cloud.firestore {
       match /episodes/{episodeId} {
         // Host requests an episode by creating the doc; the Cloud Function
         // (Admin SDK, bypasses rules) writes progress/results back onto it.
-        allow read: if request.auth != null;
+        allow read: if isSessionHost() || isAdmitted();
         allow create, delete: if isSessionHost();
       }
 
       match /recordings/{recId} {
-        // Written once a participant's chunk uploads are confirmed complete.
-        // Doc IDs are `{uid}_take{n}` (or `{uid}_screen_take{n}` for screen
-        // recordings) so each track is its own record; only the participant
-        // who owns the uid prefix may write it, and only the session host
-        // (or the owner) may delete it.
+        // Written from the moment a participant's take starts (uploadState
+        // recording → uploading → complete). Doc IDs are `{uid}_take{n}`
+        // (or `{uid}_screen_take{n}`) so each track is its own record.
+        // These docs carry transcripts — reads are room-members only.
         // The host may also update — that's how a dead participant's
         // partial track gets finalized (uploadState flipped to "complete").
-        allow read: if request.auth != null;
+        allow read: if isSessionHost() || isAdmitted();
         allow create, update: if isSessionHost()
           || (request.auth != null
               && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));

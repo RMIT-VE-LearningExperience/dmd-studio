@@ -43,3 +43,21 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+# TURN relay (Cloudflare Calls) — required for guests behind strict NATs.
+# The /api/turn route mints short-lived credentials from these; without them
+# the app falls back to STUN-only. To activate:
+#   1. Cloudflare dashboard → Calls → TURN Server → Create — copy the
+#      Key ID (Turn Token ID) and API Token.
+#   2. Store the token as a secret:
+#        firebase apphosting:secrets:set CLOUDFLARE_TURN_KEY_API_TOKEN
+#   3. Uncomment the block below, fill in the key id, and redeploy.
+#
+#  - variable: CLOUDFLARE_TURN_KEY_ID
+#    value: YOUR_TURN_KEY_ID
+#    availability:
+#      - RUNTIME
+#  - variable: CLOUDFLARE_TURN_KEY_API_TOKEN
+#    secret: CLOUDFLARE_TURN_KEY_API_TOKEN
+#    availability:
+#      - RUNTIME

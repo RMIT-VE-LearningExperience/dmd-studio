@@ -5,7 +5,8 @@ const {
 } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getStorage } = require("firebase-admin/storage");
-const { FieldValue, getFirestore } = require("firebase-admin/firestore");
+const { FieldValue, getFirestore, Timestamp } = require("firebase-admin/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { spawn } = require("node:child_process");
 const { unlink } = require("node:fs/promises");
 const path = require("node:path");
@@ -505,5 +506,110 @@ exports.produceEpisode = onDocumentCreated(
     } finally {
       await Promise.all(tmpFiles.map((f) => unlink(f).catch(() => {})));
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Session summary: denormalizes recordingCount + preview thumbnails onto the
+// session doc so dashboards render from one query instead of a recordings
+// fetch (and thumbnail URL lookup) per project.
+// ---------------------------------------------------------------------------
+
+// Firebase-style public download URL for an object, minting the download
+// token if the object doesn't have one yet.
+async function downloadUrlFor(bucket, objectPath) {
+  const file = bucket.file(objectPath);
+  const [metadata] = await file.getMetadata();
+  let token = metadata.metadata?.firebaseStorageDownloadTokens?.split(",")[0];
+  if (!token) {
+    token = require("node:crypto").randomUUID();
+    await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
+  }
+  return (
+    `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/` +
+    `${encodeURIComponent(objectPath)}?alt=media&token=${token}`
+  );
+}
+
+exports.syncSessionSummary = onDocumentWritten(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "256MiB",
+    timeoutSeconds: 120,
+  },
+  async (event) => {
+    // Recording docs are written constantly while a take uploads — only
+    // recompute when something the summary actually shows has changed.
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    const summaryKey = (d) =>
+      d ? JSON.stringify([d.thumbnailPath, d.displayName, d.kind]) : "absent";
+    if (before && after && summaryKey(before) === summaryKey(after)) return;
+
+    const { sessionId } = event.params;
+    const bucket = getStorage().bucket(BUCKET);
+    const recsSnap = await getFirestore().collection(`sessions/${sessionId}/recordings`).get();
+
+    const candidates = recsSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((r) => r.kind !== "screen" && r.thumbnailPath)
+      .sort(
+        (a, b) =>
+          ((b.completedAt?.toMillis?.() ?? 0) || b.startedAtMs || 0) -
+          ((a.completedAt?.toMillis?.() ?? 0) || a.startedAtMs || 0),
+      )
+      .slice(0, 3);
+
+    const previews = (
+      await Promise.all(
+        candidates.map(async (r) => {
+          try {
+            return {
+              id: r.id,
+              displayName: r.displayName || "Participant",
+              thumbnailUrl: await downloadUrlFor(bucket, r.thumbnailPath),
+            };
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter(Boolean);
+
+    await getFirestore().doc(`sessions/${sessionId}`).update({
+      recordingCount: recsSnap.size,
+      previews,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Archived-project retention: deleted projects sit in Archived (restorable)
+// for 30 days, then everything — recordings included — is purged for good.
+// ---------------------------------------------------------------------------
+
+const RETENTION_DAYS = 30;
+
+exports.purgeArchivedSessions = onSchedule(
+  {
+    schedule: "every 24 hours",
+    region: "us-central1",
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const cutoff = Timestamp.fromMillis(Date.now() - RETENTION_DAYS * 24 * 3600 * 1000);
+    const snap = await getFirestore()
+      .collection("sessions")
+      .where("archivedAt", "<=", cutoff)
+      .get();
+
+    for (const docSnap of snap.docs) {
+      const sessionId = docSnap.id;
+      await getStorage().bucket(BUCKET).deleteFiles({ prefix: `recordings/${sessionId}/` });
+      await getFirestore().recursiveDelete(docSnap.ref);
+      console.log(`Purged archived session ${sessionId} (archived ${docSnap.data().archivedAt.toDate().toISOString()})`);
+    }
+    if (snap.empty) console.log("No archived sessions past retention.");
   },
 );

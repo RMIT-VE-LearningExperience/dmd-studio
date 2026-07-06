@@ -45,3 +45,5 @@ functions/node_modules
 
 # Claude Code local settings
 .claude/
+firebase-debug.log
+firebase-debug.*.log

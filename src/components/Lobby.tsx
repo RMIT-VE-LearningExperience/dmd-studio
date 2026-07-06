@@ -12,6 +12,7 @@ import {
   type CaptureSettings,
   type MediaDeviceChoice,
 } from "@/lib/media";
+import { warmIceServers } from "@/lib/rtcConfig";
 import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
 
 const ROLE_LABEL: Record<ParticipantRole, string> = {
@@ -74,6 +75,10 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const settingsRef = useRef<CaptureSettings>({});
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [settings, setSettings] = useState<CaptureSettings | null>(null);
+  const [sessionTitle, setSessionTitle] = useState("");
+  const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
+  // Captured once per mount — "you're early" doesn't need a live clock.
+  const [now] = useState(() => Date.now());
   const [name, setName] = useState(initialName);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
   const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
@@ -108,6 +113,9 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const joinedRef = useRef(false);
 
   useEffect(() => {
+    // Fetch TURN credentials while the user is still checking devices, so
+    // they're cached before the mesh creates its first peer connection.
+    void warmIceServers();
     // The host's session-level capture settings (resolution cap, audio-only)
     // must be known before the first getUserMedia call.
     let cancelled = false;
@@ -115,7 +123,13 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
       let loaded: CaptureSettings = {};
       try {
         const snap = await getDoc(doc(db, "sessions", sessionId));
-        loaded = (snap.data()?.settings as CaptureSettings) ?? {};
+        const data = snap.data();
+        loaded = (data?.settings as CaptureSettings) ?? {};
+        if (cancelled) return;
+        // Give the guest some context: which session this is, and whether
+        // they're early.
+        setSessionTitle((data?.title as string) ?? "");
+        if (data?.scheduledAt?.toDate) setScheduledAt(data.scheduledAt.toDate());
       } catch {
         // No settings readable — fall back to defaults.
       }
@@ -185,7 +199,25 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
         </div>
 
         <div className="flex flex-col gap-4">
-          <h1 className="text-xl font-semibold">Let&rsquo;s check your devices</h1>
+          <div className="flex flex-col gap-1">
+            {sessionTitle && (
+              <p className="text-xs font-medium text-indigo-300">{sessionTitle}</p>
+            )}
+            <h1 className="text-xl font-semibold">Let&rsquo;s check your devices</h1>
+            {scheduledAt && (
+              <p className="text-xs text-neutral-500">
+                Scheduled for{" "}
+                {scheduledAt.toLocaleString(undefined, {
+                  weekday: "long",
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+                {scheduledAt.getTime() - now > 15 * 60_000 && " — you're early, feel free to wait here"}
+              </p>
+            )}
+          </div>
 
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-neutral-500">

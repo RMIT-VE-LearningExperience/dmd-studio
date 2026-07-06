@@ -3,10 +3,16 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
-  "storage": {
-    "bucket": "dmd-studio-recordings",
-    "rules": "storage.rules"
-  },
+  "storage": [
+    {
+      "bucket": "dmd-studio-recordings",
+      "rules": "storage.rules"
+    },
+    {
+      "bucket": "dmd-studio.firebasestorage.app",
+      "rules": "storage.rules"
+    }
+  ],
   "functions": {
     "source": "functions",
     "runtime": "nodejs20"

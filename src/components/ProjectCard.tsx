@@ -2,10 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { doc, updateDoc, Timestamp } from "firebase/firestore";
+import { doc, serverTimestamp, updateDoc, Timestamp } from "firebase/firestore";
 import { CalendarDays, FileText, FolderOpen, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { deleteProject } from "@/lib/deletion";
 import type { Project } from "@/hooks/useProjects";
 
 function formatDate(ts: Timestamp | null) {
@@ -67,16 +66,18 @@ export default function ProjectCard({ project, onScript }: Props) {
     await updateDoc(doc(db, "sessions", project.id), { scheduledAt: null });
   };
 
+  // Soft delete: the project moves to Archived (bottom of the Projects
+  // page) and is purged — recordings included — 30 days later.
   const remove = async () => {
     const sure = window.confirm(
       project.recordingCount > 0
-        ? `Delete "${project.title}" and its ${project.recordingCount} recording${project.recordingCount === 1 ? "" : "s"} permanently? This can't be undone.`
-        : `Delete "${project.title}" permanently? This can't be undone.`,
+        ? `Delete "${project.title}"? It moves to Archived and its ${project.recordingCount} recording${project.recordingCount === 1 ? "" : "s"} stay restorable for 30 days.`
+        : `Delete "${project.title}"? It moves to Archived and can be restored for 30 days.`,
     );
     if (!sure) return;
     setDeleting(true);
     try {
-      await deleteProject(project.id);
+      await updateDoc(doc(db, "sessions", project.id), { archivedAt: serverTimestamp() });
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Failed to delete project.");
     } finally {
