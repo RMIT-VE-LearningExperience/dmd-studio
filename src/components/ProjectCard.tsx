@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, updateDoc, Timestamp } from "firebase/firestore";
-import { CalendarDays, FileText, FolderOpen, Pencil, Trash2, Video } from "lucide-react";
+import { CalendarDays, FileText, FolderOpen, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { deleteProject } from "@/lib/deletion";
 import type { Project } from "@/hooks/useProjects";
@@ -31,6 +31,7 @@ export default function ProjectCard({ project, onScript }: Props) {
   const [scheduling, setScheduling] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const commitRename = async () => {
     const title = titleDraft.trim();
@@ -40,6 +41,7 @@ export default function ProjectCard({ project, onScript }: Props) {
   };
 
   const startSchedule = () => {
+    setMenuOpen(false);
     setScheduling(true);
     const base =
       project.scheduledAt?.toDate() ??
@@ -184,10 +186,10 @@ export default function ProjectCard({ project, onScript }: Props) {
           )}
         </div>
         <div
-          className="relative min-w-0 max-w-[min(100%,24rem)] shrink"
+          className="relative shrink-0"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="flex max-w-full items-center justify-end gap-1.5 overflow-x-auto pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex items-center justify-end gap-1.5">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -203,6 +205,7 @@ export default function ProjectCard({ project, onScript }: Props) {
               onClick={(e) => {
                 e.stopPropagation();
                 onScript(project);
+                setMenuOpen(false);
               }}
               title="Prepare the session script"
               className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
@@ -213,34 +216,43 @@ export default function ProjectCard({ project, onScript }: Props) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setRenaming(true);
-                setTitleDraft(project.title);
+                setMenuOpen((open) => !open);
               }}
-              title="Rename project"
-              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
+              aria-label="More project actions"
+              aria-expanded={menuOpen}
+              title="More actions"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 transition hover:border-neutral-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-neutral-500 focus:ring-offset-2 focus:ring-offset-neutral-900"
             >
-              <Pencil aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
-              Rename
+              <MoreHorizontal aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
             </button>
-            {project.recordingCount > 0 && (
+          </div>
+          {menuOpen && (
+            <div className="absolute bottom-full right-0 z-20 mb-2 w-44 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-950 py-1 text-sm shadow-2xl">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  setMenuOpen(false);
+                  setRenaming(true);
+                  setTitleDraft(project.title);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
+              >
+                <Pencil aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                Rename
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
                   router.push(`/session/${project.id}/recordings`);
                 }}
-                className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
               >
-                <Video aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
-                Recordings
+                <Video aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                {project.recordingCount > 0 ? "Recordings" : "Open folder"}
               </button>
-            )}
-          </div>
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 right-0 flex w-8 items-center justify-end bg-gradient-to-l from-neutral-900 via-neutral-900 to-transparent pr-1 text-lg leading-none text-neutral-500"
-          >
-            ...
-          </span>
+            </div>
+          )}
         </div>
       </div>
     </div>
