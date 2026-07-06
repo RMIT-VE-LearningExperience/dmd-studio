@@ -87,9 +87,9 @@ export default function ProjectCard({ project, onScript }: Props) {
   return (
     <div
       onClick={() => router.push(`/session/${project.id}`)}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 transition hover:border-neutral-700"
+      className="group flex cursor-pointer flex-col rounded-2xl border border-neutral-800 bg-neutral-900 transition hover:border-neutral-700"
     >
-      <div className="relative">
+      <div className="relative overflow-hidden rounded-t-2xl">
         <button
           type="button"
           onClick={(e) => {
@@ -118,19 +118,6 @@ export default function ProjectCard({ project, onScript }: Props) {
           ) : (
             <FolderOpen aria-hidden="true" className="h-11 w-11 text-neutral-200/70" strokeWidth={1.5} />
           )}
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            remove();
-          }}
-          disabled={deleting}
-          className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/80 text-neutral-400 shadow-lg backdrop-blur transition hover:border-red-500 hover:text-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label={`Delete ${project.title}`}
-          title="Delete project"
-        >
-          <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
         </button>
       </div>
       <div className="flex items-end justify-between gap-2 p-4">
@@ -208,29 +195,7 @@ export default function ProjectCard({ project, onScript }: Props) {
         >
           <div className="flex items-center justify-end gap-1.5">
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                startSchedule();
-              }}
-              title="Schedule this recording"
-              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
-            >
-              <CalendarDays aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
-              Schedule
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onScript(project);
-                setMenuOpen(false);
-              }}
-              title="Prepare the session script"
-              className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
-            >
-              <FileText aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.8} />
-              Script
-            </button>
-            <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 setMenuOpen((open) => !open);
@@ -244,8 +209,32 @@ export default function ProjectCard({ project, onScript }: Props) {
             </button>
           </div>
           {menuOpen && (
-            <div className="absolute bottom-full right-0 z-20 mb-2 w-44 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-950 py-1 text-sm shadow-2xl">
+            <div className="absolute bottom-full right-0 z-20 mb-2 w-48 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-950 py-1 text-sm shadow-2xl">
               <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startSchedule();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
+              >
+                <CalendarDays aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                Schedule
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  onScript(project);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
+              >
+                <FileText aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                Script
+              </button>
+              <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
@@ -258,6 +247,7 @@ export default function ProjectCard({ project, onScript }: Props) {
                 Rename
               </button>
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
@@ -267,6 +257,19 @@ export default function ProjectCard({ project, onScript }: Props) {
               >
                 <Video aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
                 {project.recordingCount > 0 ? "Recordings" : "Open folder"}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  remove();
+                }}
+                disabled={deleting}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-300 transition hover:bg-red-500/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                Delete
               </button>
             </div>
           )}
