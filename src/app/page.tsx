@@ -2,17 +2,17 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useProjects, createProject, type Project } from "@/hooks/useProjects";
+import { useProjects, type Project } from "@/hooks/useProjects";
 import AppNav from "@/components/AppNav";
 import SignInScreen from "@/components/SignInScreen";
 import ProjectCard from "@/components/ProjectCard";
 import ScriptModal from "@/components/ScriptModal";
+import PlanRecordingModal from "@/components/PlanRecordingModal";
+import SessionInviteLinks from "@/components/SessionInviteLinks";
 
 export default function Home() {
-  const router = useRouter();
   const { user, authLoading, projects } = useProjects();
-  const [creating, setCreating] = useState(false);
+  const [planningOpen, setPlanningOpen] = useState(false);
   const [scriptProject, setScriptProject] = useState<Project | null>(null);
   // Captured once per mount — "upcoming" doesn't need to tick live.
   const [now] = useState(() => Date.now());
@@ -23,13 +23,6 @@ export default function Home() {
   if (!user) {
     return <SignInScreen />;
   }
-
-  const newProject = async () => {
-    setCreating(true);
-    const id = await createProject(user);
-    setCreating(false);
-    router.push(`/session/${id}`);
-  };
 
   // Anything planned from an hour ago onwards counts as upcoming.
   const upcoming = projects
@@ -52,11 +45,10 @@ export default function Home() {
             </p>
           </div>
           <button
-            onClick={newProject}
-            disabled={creating}
+            onClick={() => setPlanningOpen(true)}
             className="flex items-center gap-1.5 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            + New recording
+            + Plan recording
           </button>
         </header>
 
@@ -97,7 +89,13 @@ export default function Home() {
                       })}
                     </span>
                   </div>
-                  <span className="mr-auto text-sm font-medium">{p.title}</span>
+                  <div className="mr-auto flex min-w-0 flex-col">
+                    <span className="truncate text-sm font-medium">{p.title}</span>
+                    {p.durationMinutes && (
+                      <span className="text-xs text-neutral-500">{p.durationMinutes} min</span>
+                    )}
+                  </div>
+                  <SessionInviteLinks sessionId={p.id} compact />
                   <button
                     onClick={() => setScriptProject(p)}
                     className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
@@ -143,6 +141,7 @@ export default function Home() {
             onClose={() => setScriptProject(null)}
           />
         )}
+        {planningOpen && <PlanRecordingModal user={user} onClose={() => setPlanningOpen(false)} />}
       </main>
     </div>
   );

@@ -7,6 +7,7 @@ export type CalendarEntry = {
   id: string;
   title: string;
   scheduledAt: Timestamp;
+  durationMinutes?: number | null;
 };
 
 type Props = {
@@ -117,12 +118,13 @@ export default function PlannerCalendar({ entries, onOpen, onCreate }: Props) {
                       onOpen(e.id);
                     }}
                     className="truncate rounded-md bg-indigo-600/20 px-1.5 py-0.5 text-left text-[10px] font-medium text-indigo-300 transition hover:bg-indigo-600/40"
-                    title={`${e.title} · ${e.scheduledAt.toDate().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`}
+                    title={`${e.title} · ${e.scheduledAt.toDate().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}${e.durationMinutes ? ` · ${e.durationMinutes} min` : ""}`}
                   >
                     {e.scheduledAt
                       .toDate()
                       .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}{" "}
                     {e.title}
+                    {e.durationMinutes ? ` (${e.durationMinutes}m)` : ""}
                   </button>
                 ))}
                 <span className="hidden text-[10px] text-neutral-600 group-hover:block">+ plan</span>

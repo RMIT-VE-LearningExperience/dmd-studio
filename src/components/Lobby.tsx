@@ -77,6 +77,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const [settings, setSettings] = useState<CaptureSettings | null>(null);
   const [sessionTitle, setSessionTitle] = useState("");
   const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
+  const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
   // Captured once per mount — "you're early" doesn't need a live clock.
   const [now] = useState(() => Date.now());
   const [name, setName] = useState(initialName);
@@ -130,6 +131,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
         // they're early.
         setSessionTitle((data?.title as string) ?? "");
         if (data?.scheduledAt?.toDate) setScheduledAt(data.scheduledAt.toDate());
+        setDurationMinutes((data?.durationMinutes as number) ?? null);
       } catch {
         // No settings readable — fall back to defaults.
       }
@@ -214,6 +216,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
                   hour: "numeric",
                   minute: "2-digit",
                 })}
+                {durationMinutes ? ` · ${durationMinutes} min` : ""}
                 {scheduledAt.getTime() - now > 15 * 60_000 && " — you're early, feel free to wait here"}
               </p>
             )}

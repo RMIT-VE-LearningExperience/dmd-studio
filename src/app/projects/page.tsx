@@ -1,15 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { useProjects, createProject, type Project } from "@/hooks/useProjects";
+import { useProjects, type Project } from "@/hooks/useProjects";
 import { deleteProject } from "@/lib/deletion";
 import AppNav from "@/components/AppNav";
 import SignInScreen from "@/components/SignInScreen";
 import ProjectCard from "@/components/ProjectCard";
 import ScriptModal from "@/components/ScriptModal";
+import PlanRecordingModal from "@/components/PlanRecordingModal";
 
 const RETENTION_DAYS = 30;
 
@@ -73,9 +73,8 @@ function ArchivedRow({ project }: { project: Project }) {
 }
 
 export default function ProjectsPage() {
-  const router = useRouter();
   const { user, authLoading, projects, archived } = useProjects();
-  const [creating, setCreating] = useState(false);
+  const [planningOpen, setPlanningOpen] = useState(false);
   const [scriptProject, setScriptProject] = useState<Project | null>(null);
 
   if (authLoading) {
@@ -84,13 +83,6 @@ export default function ProjectsPage() {
   if (!user) {
     return <SignInScreen />;
   }
-
-  const newProject = async () => {
-    setCreating(true);
-    const id = await createProject(user);
-    setCreating(false);
-    router.push(`/session/${id}`);
-  };
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -106,17 +98,16 @@ export default function ProjectsPage() {
             </p>
           </div>
           <button
-            onClick={newProject}
-            disabled={creating}
+            onClick={() => setPlanningOpen(true)}
             className="flex items-center gap-1.5 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            + New
+            + Plan
           </button>
         </header>
 
         {projects.length === 0 ? (
           <p className="text-sm text-neutral-500">
-            No projects yet — click &ldquo;New&rdquo; to record your first session.
+            No projects yet — click &ldquo;Plan&rdquo; to schedule your first session.
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -146,6 +137,7 @@ export default function ProjectsPage() {
             onClose={() => setScriptProject(null)}
           />
         )}
+        {planningOpen && <PlanRecordingModal user={user} onClose={() => setPlanningOpen(false)} />}
       </main>
     </div>
   );

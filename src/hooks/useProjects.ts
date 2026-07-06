@@ -25,10 +25,17 @@ export type Project = {
   title: string;
   createdAt: Timestamp | null;
   scheduledAt: Timestamp | null;
+  durationMinutes: number | null;
   archivedAt: Timestamp | null;
   recordingCount: number;
   previews: ProjectPreview[];
   live: boolean;
+};
+
+export type CreateProjectInput = {
+  title?: string;
+  scheduledAt?: Date;
+  durationMinutes?: number;
 };
 
 // Auth + the signed-in host's project list, shared by Home, Calendar and
@@ -65,6 +72,7 @@ export function useProjects() {
           title: (data.title as string) || "Untitled",
           createdAt: (data.createdAt as Timestamp) ?? null,
           scheduledAt: (data.scheduledAt as Timestamp) ?? null,
+          durationMinutes: (data.durationMinutes as number) ?? null,
           archivedAt: data.archivedAt instanceof Timestamp ? data.archivedAt : null,
           recordingCount: (data.recordingCount as number) ?? 0,
           previews: (data.previews as ProjectPreview[]) ?? [],
@@ -89,12 +97,23 @@ export function useProjects() {
   return { user, authLoading, projects, archived };
 }
 
-export async function createProject(user: User, title = "Untitled", scheduledAt?: Date) {
+export async function createProject(
+  user: User,
+  titleOrInput: string | CreateProjectInput = "Untitled",
+  scheduledAt?: Date,
+) {
+  const input =
+    typeof titleOrInput === "string"
+      ? { title: titleOrInput, scheduledAt }
+      : titleOrInput;
+  const durationMinutes = input.durationMinutes ? Math.max(15, Math.round(input.durationMinutes)) : null;
+
   const ref = await addDoc(collection(db, "sessions"), {
     hostUid: user.uid,
-    title,
+    title: input.title?.trim() || "Untitled",
     createdAt: serverTimestamp(),
-    ...(scheduledAt ? { scheduledAt: Timestamp.fromDate(scheduledAt) } : {}),
+    ...(input.scheduledAt ? { scheduledAt: Timestamp.fromDate(input.scheduledAt) } : {}),
+    ...(durationMinutes ? { durationMinutes } : {}),
     status: "created",
   });
   return ref.id;

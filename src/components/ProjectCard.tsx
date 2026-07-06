@@ -29,6 +29,7 @@ export default function ProjectCard({ project, onScript }: Props) {
   const [titleDraft, setTitleDraft] = useState("");
   const [scheduling, setScheduling] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState("");
+  const [durationDraft, setDurationDraft] = useState(60);
   const [deleting, setDeleting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -51,6 +52,7 @@ export default function ProjectCard({ project, onScript }: Props) {
         return d;
       })();
     setScheduleDraft(toDatetimeLocal(base));
+    setDurationDraft(project.durationMinutes ?? 60);
   };
 
   const commitSchedule = async () => {
@@ -58,12 +60,15 @@ export default function ProjectCard({ project, onScript }: Props) {
     if (!scheduleDraft) return;
     const when = new Date(scheduleDraft);
     if (Number.isNaN(when.getTime())) return;
-    await updateDoc(doc(db, "sessions", project.id), { scheduledAt: Timestamp.fromDate(when) });
+    await updateDoc(doc(db, "sessions", project.id), {
+      scheduledAt: Timestamp.fromDate(when),
+      durationMinutes: durationDraft,
+    });
   };
 
   const clearSchedule = async () => {
     setScheduling(false);
-    await updateDoc(doc(db, "sessions", project.id), { scheduledAt: null });
+    await updateDoc(doc(db, "sessions", project.id), { scheduledAt: null, durationMinutes: null });
   };
 
   // Soft delete: the project moves to Archived (bottom of the Projects
@@ -158,8 +163,19 @@ export default function ProjectCard({ project, onScript }: Props) {
                 autoFocus
                 value={scheduleDraft}
                 onChange={(e) => setScheduleDraft(e.target.value)}
-                className="rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-xs text-neutral-100 outline-none"
+                className="min-w-0 rounded-md border border-indigo-500 bg-neutral-800 px-1.5 py-0.5 text-xs text-neutral-100 outline-none"
               />
+              <select
+                value={durationDraft}
+                onChange={(e) => setDurationDraft(Number(e.target.value))}
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-800 px-1 py-0.5 text-xs text-neutral-100 outline-none"
+              >
+                {[30, 45, 60, 75, 90, 120, 180].map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes}m
+                  </option>
+                ))}
+              </select>
               <button
                 onClick={commitSchedule}
                 className="rounded-full bg-indigo-600 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
@@ -186,6 +202,7 @@ export default function ProjectCard({ project, onScript }: Props) {
                   hour: "numeric",
                   minute: "2-digit",
                 })}
+                {project.durationMinutes ? ` · ${project.durationMinutes} min` : ""}
               </span>
             )
           )}

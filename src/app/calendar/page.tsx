@@ -2,16 +2,19 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useProjects, createProject, type Project } from "@/hooks/useProjects";
+import { useProjects, type Project } from "@/hooks/useProjects";
 import AppNav from "@/components/AppNav";
 import SignInScreen from "@/components/SignInScreen";
 import PlannerCalendar from "@/components/PlannerCalendar";
 import ScriptModal from "@/components/ScriptModal";
+import PlanRecordingModal from "@/components/PlanRecordingModal";
+import SessionInviteLinks from "@/components/SessionInviteLinks";
 
 export default function CalendarPage() {
   const router = useRouter();
   const { user, authLoading, projects } = useProjects();
   const [scriptProject, setScriptProject] = useState<Project | null>(null);
+  const [planningDate, setPlanningDate] = useState<Date | null>(null);
 
   if (authLoading) {
     return <p className="min-h-screen bg-neutral-950 p-6 text-neutral-500">Loading…</p>;
@@ -19,17 +22,6 @@ export default function CalendarPage() {
   if (!user) {
     return <SignInScreen />;
   }
-
-  // Calendar day click: plan a new session on that day (10:00 by default).
-  const createScheduled = async (date: Date) => {
-    const title = window.prompt(
-      `Plan a recording for ${date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — project title:`,
-    );
-    if (title === null) return;
-    const when = new Date(date);
-    when.setHours(10, 0, 0, 0);
-    await createProject(user, title.trim() || "Untitled", when);
-  };
 
   const scheduled = projects
     .filter((p) => p.scheduledAt)
@@ -42,17 +34,19 @@ export default function CalendarPage() {
         <header>
           <h1 className="text-2xl font-semibold">Calendar</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Click a day to plan a recording, or a session to enter its studio. Prep scripts from
-            the list below.
+            Click a day to plan a recording with time, duration and invite links. Prep scripts from
+            the session list.
           </p>
         </header>
 
         <PlannerCalendar
           entries={projects.flatMap((p) =>
-            p.scheduledAt ? [{ id: p.id, title: p.title, scheduledAt: p.scheduledAt }] : [],
+            p.scheduledAt
+              ? [{ id: p.id, title: p.title, scheduledAt: p.scheduledAt, durationMinutes: p.durationMinutes }]
+              : [],
           )}
           onOpen={(id) => router.push(`/session/${id}`)}
-          onCreate={createScheduled}
+          onCreate={(date) => setPlanningDate(date)}
         />
 
         {scheduled.length > 0 && (
@@ -74,6 +68,12 @@ export default function CalendarPage() {
                     })}
                   </span>
                   <span className="mr-auto text-sm font-medium">{p.title}</span>
+                  {p.durationMinutes && (
+                    <span className="rounded-full bg-neutral-800 px-2.5 py-1 text-xs text-neutral-400">
+                      {p.durationMinutes} min
+                    </span>
+                  )}
+                  <SessionInviteLinks sessionId={p.id} compact />
                   <button
                     onClick={() => setScriptProject(p)}
                     className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
@@ -97,6 +97,13 @@ export default function CalendarPage() {
             sessionId={scriptProject.id}
             title={scriptProject.title}
             onClose={() => setScriptProject(null)}
+          />
+        )}
+        {planningDate && (
+          <PlanRecordingModal
+            user={user}
+            initialDate={planningDate}
+            onClose={() => setPlanningDate(null)}
           />
         )}
       </main>
