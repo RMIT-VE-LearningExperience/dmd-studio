@@ -70,15 +70,15 @@ export default function ProjectCard({ project, onScript }: Props) {
   const remove = async () => {
     const sure = window.confirm(
       project.recordingCount > 0
-        ? `Delete "${project.title}" and its ${project.recordingCount} recording${project.recordingCount === 1 ? "" : "s"}? This can't be undone.`
-        : `Delete "${project.title}"? This can't be undone.`,
+        ? `Archive "${project.title}" and its ${project.recordingCount} recording${project.recordingCount === 1 ? "" : "s"} for 30 days?`
+        : `Archive "${project.title}" for 30 days?`,
     );
     if (!sure) return;
     setDeleting(true);
     try {
       await deleteProject(project.id);
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Failed to delete project.");
+      window.alert(err instanceof Error ? err.message : "Failed to archive project.");
     } finally {
       setDeleting(false);
     }
@@ -269,7 +269,7 @@ export default function ProjectCard({ project, onScript }: Props) {
                 className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-300 transition hover:bg-red-500/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
-                Delete
+                {deleting ? "Archiving..." : "Archive"}
               </button>
             </div>
           )}

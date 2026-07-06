@@ -56,9 +56,10 @@ export function useProjects() {
       orderBy("createdAt", "desc"),
     );
     return onSnapshot(q, async (snap) => {
-      const withCounts = await Promise.all(
+      const withCounts: Array<Project | null> = await Promise.all(
         snap.docs.map(async (docSnap) => {
           const data = docSnap.data();
+          if (data.archivedAt instanceof Timestamp) return null;
           const recordingsSnap = await getDocs(collection(db, "sessions", docSnap.id, "recordings"));
           const previewCandidates = recordingsSnap.docs
             .map((recordingSnap) => {
@@ -107,7 +108,7 @@ export function useProjects() {
           };
         }),
       );
-      setProjects(withCounts);
+      setProjects(withCounts.filter((project): project is Project => project !== null));
     });
   }, [user]);
 
