@@ -49,7 +49,7 @@ env:
 # the app falls back to STUN-only. The API token is stored separately via:
 #   firebase apphosting:secrets:set CLOUDFLARE_TURN_KEY_API_TOKEN
   - variable: CLOUDFLARE_TURN_KEY_ID
-    value: 25ba0b9272d65c99ab32691eedc35acd
+    value: ad08254aa31e52691ba20b896a1e5a37
     availability:
       - RUNTIME
   - variable: CLOUDFLARE_TURN_KEY_API_TOKEN
