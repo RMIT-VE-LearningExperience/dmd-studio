@@ -142,6 +142,14 @@ export function useWebRTCMesh(
         };
 
         (async () => {
+          // This doc ID is deterministic (sorted uid pair) and gets reused
+          // across every leave/rejoin — a leftover `answer` from a previous
+          // session would otherwise look like the answer to this brand-new
+          // offer, and the real answer that arrives later gets ignored
+          // (currentRemoteDescription is already set). Clearing it here
+          // makes correctness independent of whether leave()'s best-effort,
+          // un-awaited cleanup has finished yet.
+          await deleteConnectionDoc(sessionId, pairId(localUid, remoteUid));
           const offerDescription = await pc.createOffer();
           await pc.setLocalDescription(offerDescription);
           await setDoc(
@@ -413,11 +421,29 @@ export function useWebRTCMesh(
             disconnectFromPeer(uid);
             disconnectScreen(uid);
           } else {
-            connectToPeer(uid, data.role, data.displayName);
+            // connectToPeer/connectToScreen no-op once a connection already
+            // exists (keyed on uid / shareId) — so a metadata-only change
+            // like a host/producer rename needs its own path, or the peer's
+            // tile would keep showing the old name until they reconnect.
+            if (peerConnectionsRef.current[uid]) {
+              setPeers((prev) =>
+                prev[uid]
+                  ? { ...prev, [uid]: { ...prev[uid], displayName: data.displayName, role: data.role } }
+                  : prev,
+              );
+            } else {
+              connectToPeer(uid, data.role, data.displayName);
+            }
             // Follow their screen-share state, and offer them ours if we're
             // sharing when they arrive.
             if (data.screenShareId) {
-              connectToScreen(uid, data.screenShareId, data.displayName);
+              if (screenRecvPcsRef.current[uid]?.shareId === data.screenShareId) {
+                setScreenPeers((prev) =>
+                  prev[uid] ? { ...prev, [uid]: { ...prev[uid], displayName: data.displayName } } : prev,
+                );
+              } else {
+                connectToScreen(uid, data.screenShareId, data.displayName);
+              }
             } else {
               disconnectScreen(uid);
             }

@@ -26,6 +26,17 @@ service cloud.firestore {
           .data.get('settings', {}).get('autoAdmit', false) == true;
       }
 
+      // An admitted producer — allowed to rename other participants, but
+      // nothing else that isSessionHost() alone would otherwise gate.
+      function isAdmittedProducer() {
+        return request.auth != null
+          && exists(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(request.auth.uid))
+          && get(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(request.auth.uid))
+            .data.get('role', '') == 'producer'
+          && get(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(request.auth.uid))
+            .data.get('admission', '') == 'admitted';
+      }
+
       // Anyone with the invite link may open a specific session (guests are
       // anonymous), but only the host can LIST sessions — without this split
       // any anonymous visitor could enumerate every session in the app.
@@ -63,6 +74,10 @@ service cloud.firestore {
               || (request.resource.data.get('admission', '') == 'admitted'
                   && autoAdmitOn()
                   && resource.data.get('admission', '') != 'denied'));
+        // A producer may rename someone else, but touch nothing else on
+        // their doc — can't use this to admit, deny, or mute.
+        allow update: if isAdmittedProducer()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName']);
       }
 
       match /connections/{pairId} {

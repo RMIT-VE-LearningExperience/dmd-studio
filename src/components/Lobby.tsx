@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
-import { Mic } from "lucide-react";
+import { Mic, MicOff } from "lucide-react";
 import { db } from "@/lib/firebase";
 import {
   getBestUserMedia,
@@ -66,7 +66,7 @@ type Props = {
   sessionId: string;
   role: ParticipantRole;
   initialName: string;
-  onJoin: (stream: MediaStream, displayName: string) => void;
+  onJoin: (stream: MediaStream, displayName: string, startMuted: boolean) => void;
 };
 
 export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
@@ -88,12 +88,19 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const [resolution, setResolution] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
+  const micMutedRef = useRef(false);
 
   const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string) => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     try {
       const next = await getBestUserMedia(videoDeviceId, audioDeviceId, settingsRef.current);
       setError(null);
+      // A fresh getUserMedia stream always starts enabled — reapply any mute
+      // the guest already chose (e.g. after switching microphones).
+      next.getAudioTracks().forEach((t) => {
+        t.enabled = !micMutedRef.current;
+      });
       streamRef.current = next;
       setStream(next);
       setResolution(
@@ -110,6 +117,15 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
       setError(friendlyMediaError(err));
     }
   }, []);
+
+  const toggleMic = () => {
+    const next = !micMuted;
+    setMicMuted(next);
+    micMutedRef.current = next;
+    streamRef.current?.getAudioTracks().forEach((t) => {
+      t.enabled = !next;
+    });
+  };
 
   const joinedRef = useRef(false);
 
@@ -158,7 +174,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
     if (!stream || !name.trim()) return;
     setJoining(true);
     joinedRef.current = true;
-    onJoin(stream, name.trim());
+    onJoin(stream, name.trim(), micMuted);
   };
 
   return (
@@ -176,6 +192,28 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
             <span className="absolute left-3 top-3 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur">
               {resolution}
               <span className="block text-neutral-400">This is how you&rsquo;ll be recorded</span>
+            </span>
+          )}
+          {stream && (
+            <button
+              onClick={toggleMic}
+              title={micMuted ? "Unmute microphone" : "Mute microphone before joining"}
+              className={`absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur transition ${
+                micMuted
+                  ? "border-red-500/60 bg-red-500/20 text-red-400"
+                  : "border-white/20 bg-black/60 text-white hover:border-white/40"
+              }`}
+            >
+              {micMuted ? (
+                <MicOff aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+              ) : (
+                <Mic aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+              )}
+            </button>
+          )}
+          {micMuted && (
+            <span className="absolute bottom-3 left-3 rounded-md bg-red-600/90 px-2 py-1 text-xs font-semibold text-white">
+              Joining muted
             </span>
           )}
           {!stream && !error && (

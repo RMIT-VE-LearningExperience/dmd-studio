@@ -502,6 +502,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
 
   const isRecordingParticipant = role !== "producer";
   const canModerate = role === "host";
+  const canRename = role === "host" || role === "producer";
   const participantDocs = useParticipantDocs(sessionId, role === "host" || role === "producer");
   const pendingRequests = participantDocs.filter((p) => p.admission === "pending");
 
@@ -717,11 +718,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     return () => window.removeEventListener("beforeunload", warn);
   }, [recordingStatus, screenRecStatus]);
 
-  const handleJoin = async (stream: MediaStream, chosenName: string) => {
+  const handleJoin = async (stream: MediaStream, chosenName: string, startMuted: boolean) => {
     localStreamRef.current = stream;
     setLocalStream(stream);
     setResolutionLabel(getVideoResolutionLabel(stream));
     setName(chosenName);
+    // The lobby already applied `enabled = false` to the audio tracks when
+    // the guest chose to join muted — mirror that into the room's own toggle
+    // state so the mic button/badge reflect it correctly from the first frame.
+    setMicOn(!startMuted);
     if (role === "host") {
       await join(stream, chosenName);
       setJoined(true);
@@ -820,6 +825,21 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       admission: "denied",
       active: false,
     }).catch(() => {});
+  };
+
+  // Host or producer only — rules restrict a producer's write on someone
+  // else's participant doc to just this field, so it can't be used to admit,
+  // remove, or otherwise moderate.
+  const renameParticipant = (peerUid: string, currentName: string) => {
+    const next = window.prompt("Rename participant", currentName)?.trim();
+    if (!next || next === currentName) return;
+    void setDoc(
+      doc(db, "sessions", sessionId, "participants", peerUid),
+      { displayName: next },
+      { merge: true },
+    ).catch(() => {
+      window.alert("Couldn't rename — try again.");
+    });
   };
 
   // Participant side of moderation: watch our own doc for a mute request or
@@ -1209,22 +1229,35 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
             badge={CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState}
             actions={
-              canModerate ? (
+              canModerate || canRename ? (
                 <>
-                  <button
-                    onClick={() => requestMute(peer.uid)}
-                    title="Mute their microphone"
-                    className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
-                  >
-                    Mute
-                  </button>
-                  <button
-                    onClick={() => removeParticipant(peer.uid, peer.displayName)}
-                    title="Remove from studio"
-                    className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-red-300 backdrop-blur transition hover:bg-black/80"
-                  >
-                    Remove
-                  </button>
+                  {canRename && (
+                    <button
+                      onClick={() => renameParticipant(peer.uid, peer.displayName)}
+                      title="Rename this participant"
+                      className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
+                    >
+                      Rename
+                    </button>
+                  )}
+                  {canModerate && (
+                    <>
+                      <button
+                        onClick={() => requestMute(peer.uid)}
+                        title="Mute their microphone"
+                        className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
+                      >
+                        Mute
+                      </button>
+                      <button
+                        onClick={() => removeParticipant(peer.uid, peer.displayName)}
+                        title="Remove from studio"
+                        className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-red-300 backdrop-blur transition hover:bg-black/80"
+                      >
+                        Remove
+                      </button>
+                    </>
+                  )}
                 </>
               ) : undefined
             }

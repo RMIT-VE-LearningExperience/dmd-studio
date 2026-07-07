@@ -10,6 +10,8 @@ type Props = {
   onClose: () => void;
 };
 
+type Point = { x: number; y: number };
+
 // Host-side script prep, done from the dashboard before the session. Saved
 // as the session-level script (scripts/shared) — the teleprompter shows it
 // to any participant who hasn't written a personal script.
@@ -18,6 +20,11 @@ export default function ScriptModal({ sessionId, title, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const modalRef = useRef<HTMLDivElement>(null);
+  const dragOriginRef = useRef<{ pointer: Point; modal: Point } | null>(null);
+  const [pos, setPos] = useState<Point | null>(null); // null = default centered
+  const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,6 +39,43 @@ export default function ScriptModal({ sessionId, title, onClose }: Props) {
       cancelled = true;
     };
   }, [sessionId]);
+
+  // Dragging is driven from window-level listeners (not the header element)
+  // so the modal keeps following the pointer even when it moves faster than
+  // the cursor can stay over the small header bar.
+  useEffect(() => {
+    if (!dragging) return;
+
+    const onMove = (e: PointerEvent) => {
+      const origin = dragOriginRef.current;
+      const rect = modalRef.current?.getBoundingClientRect();
+      if (!origin || !rect) return;
+
+      const margin = 32; // keep at least this much of the modal on-screen
+      const nextX = origin.modal.x + (e.clientX - origin.pointer.x);
+      const nextY = origin.modal.y + (e.clientY - origin.pointer.y);
+      setPos({
+        x: Math.min(Math.max(nextX, margin - rect.width), window.innerWidth - margin),
+        y: Math.min(Math.max(nextY, 0), window.innerHeight - margin),
+      });
+    };
+    const onUp = () => setDragging(false);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragging]);
+
+  const startDrag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return; // primary button/touch only
+    const rect = modalRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    dragOriginRef.current = { pointer: { x: e.clientX, y: e.clientY }, modal: { x: rect.left, y: rect.top } };
+    setDragging(true);
+  };
 
   const save = async () => {
     if (draft === null) return;
@@ -65,17 +109,35 @@ export default function ScriptModal({ sessionId, title, onClose }: Props) {
       onClick={onClose}
     >
       <div
+        ref={modalRef}
         onClick={(e) => e.stopPropagation()}
-        className="flex w-full max-w-xl flex-col gap-4 rounded-2xl border border-neutral-700 bg-neutral-900 p-5 shadow-2xl"
+        style={pos ? { position: "fixed", left: pos.x, top: pos.y, margin: 0 } : undefined}
+        className={`flex w-full max-w-xl flex-col gap-4 rounded-2xl border border-neutral-700 bg-neutral-900 p-5 shadow-2xl ${
+          dragging ? "select-none" : ""
+        }`}
       >
-        <div className="flex items-center justify-between">
+        <div
+          onPointerDown={startDrag}
+          className={`-mx-5 -mt-5 flex items-center justify-between rounded-t-2xl px-5 pb-3 pt-4 ${
+            dragging ? "cursor-grabbing" : "cursor-grab"
+          }`}
+        >
           <div>
-            <h2 className="text-sm font-semibold">Session script</h2>
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <span aria-hidden className="text-neutral-600">
+                ⠿
+              </span>
+              Session script
+            </h2>
             <p className="text-xs text-neutral-500">
               {title} — shown in every participant&rsquo;s teleprompter unless they bring their own.
             </p>
           </div>
-          <button onClick={onClose} className="text-xs text-neutral-500 hover:text-neutral-300">
+          <button
+            onClick={onClose}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="text-xs text-neutral-500 hover:text-neutral-300"
+          >
             Close
           </button>
         </div>

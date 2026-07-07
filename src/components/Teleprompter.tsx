@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -28,10 +28,36 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
   const [fontSize, setFontSize] = useState(28);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null); // viewport — sized by flex, clips content
+  const contentRef = useRef<HTMLDivElement>(null); // moved via transform, not scrollTop
+  const offsetRef = useRef(0); // current scroll offset in px, mirrors the applied transform
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+
+  // Max offset before the last line has reached the top of the viewport.
+  const getMaxOffset = useCallback(() => {
+    const viewport = scrollRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) return 0;
+    return Math.max(0, content.scrollHeight - viewport.clientHeight);
+  }, []);
+
+  // Writes the transform directly to the DOM instead of going through React
+  // state — a `translateY` on its own layer is compositor-only (hardware
+  // accelerated, no layout/paint), unlike `scrollTop` which forces a
+  // synchronous layout every frame and was the source of the jank outside a
+  // narrow speed band.
+  const applyOffset = useCallback(
+    (next: number) => {
+      const max = getMaxOffset();
+      const clamped = Math.min(Math.max(next, 0), max);
+      offsetRef.current = clamped;
+      if (contentRef.current) contentRef.current.style.transform = `translateY(-${clamped}px)`;
+      return clamped;
+    },
+    [getMaxOffset],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -75,20 +101,38 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
     let raf: number;
     let last = performance.now();
     const step = (now: number) => {
-      const el = scrollRef.current;
-      if (el) {
-        el.scrollTop += ((now - last) / 1000) * speed;
-        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
-          setPlaying(false);
-          return;
-        }
-      }
+      const dt = now - last;
       last = now;
+      const clamped = applyOffset(offsetRef.current + (dt / 1000) * speed);
+      if (clamped >= getMaxOffset() - 0.5) {
+        setPlaying(false);
+        return;
+      }
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed]);
+  }, [playing, speed, applyOffset, getMaxOffset]);
+
+  // Arrow keys nudge the script up/down — works whether auto-scroll is
+  // playing or paused, so an operator can correct position on the fly.
+  useEffect(() => {
+    if (editing || text === null) return;
+    const NUDGE_PX = 60;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        applyOffset(offsetRef.current + NUDGE_PX);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        applyOffset(offsetRef.current - NUDGE_PX);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editing, text, applyOffset]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -141,7 +185,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
       setText(draft);
       setFromShared(false);
       setEditing(false);
-      if (scrollRef.current) scrollRef.current.scrollTop = 0;
+      applyOffset(0);
     } catch {
       window.alert("Couldn't save the script — try again.");
     } finally {
@@ -160,7 +204,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
 
   const restart = () => {
     setPlaying(false);
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    applyOffset(0);
   };
 
   return (
@@ -190,6 +234,9 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
             >
               {playing ? "Pause" : "Scroll"}
             </button>
+            <span className="text-[11px] text-neutral-600" title="Nudge the script up or down, playing or paused">
+              ↑↓ to nudge
+            </span>
             <button
               onClick={restart}
               title="Back to the top"
@@ -284,17 +331,21 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
           </div>
         </div>
       ) : (
-        <div ref={scrollRef} className="overflow-y-auto px-8 py-4">
-          {/* Lead-in / lead-out space so the first and last lines can reach
-              the reading line mid-panel. */}
-          <div className="h-[20vh]" />
-          <p
-            className="whitespace-pre-wrap font-medium leading-relaxed text-neutral-100"
-            style={{ fontSize }}
-          >
-            {text}
-          </p>
-          <div className="h-[35vh]" />
+        <div ref={scrollRef} className="overflow-hidden px-8 py-4">
+          {/* Moved via transform (see applyOffset) rather than the viewport's
+              scrollTop, so the animation runs on the compositor thread. */}
+          <div ref={contentRef} style={{ willChange: "transform" }}>
+            {/* Lead-in / lead-out space so the first and last lines can reach
+                the reading line mid-panel. */}
+            <div className="h-[20vh]" />
+            <p
+              className="whitespace-pre-wrap font-medium leading-relaxed text-neutral-100"
+              style={{ fontSize }}
+            >
+              {text}
+            </p>
+            <div className="h-[35vh]" />
+          </div>
         </div>
       )}
     </div>
