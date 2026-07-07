@@ -56,15 +56,18 @@ async function doResume(
 
     const folder = storageRef(storage, folderPath);
     const listing = await listAll(folder);
+    // The folder also holds thumbnail.jpg — only part-* files are chunks,
+    // and a folder with just a thumbnail is still an empty take.
+    const parts = listing.items.filter((item) => item.name.startsWith("part-"));
 
-    if (listing.items.length === 0) {
+    if (parts.length === 0) {
       // The take died before a single chunk made it anywhere — nothing to
       // publish, just clear the leftover marker.
       await deleteTakeMeta(meta.recId);
       continue;
     }
 
-    const sizes = await Promise.all(listing.items.map((item) => getMetadata(item).then((m) => m.size)));
+    const sizes = await Promise.all(parts.map((item) => getMetadata(item).then((m) => m.size)));
 
     await setDoc(doc(db, "sessions", sessionId, "recordings", meta.docId ?? `${uid}_take${meta.take}`), {
       uid,
@@ -74,7 +77,7 @@ async function doResume(
       kind: meta.kind ?? "camera",
       folder: folderPath,
       audioOnly: meta.audioOnly ?? false,
-      chunkCount: listing.items.length,
+      chunkCount: parts.length,
       totalBytes: sizes.reduce((a, b) => a + b, 0),
       mimeType: meta.mimeType,
       extension: meta.extension,

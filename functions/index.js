@@ -180,6 +180,9 @@ exports.extractThumbnail = onDocumentUpdated(
     if (!after?.composedPath) return;
     if (after.kind === "screen" || after.audioOnly) return;
     if (after.thumbnailSource === "processed") return;
+    // A failed attempt writes thumbnailError — without this guard, that very
+    // write re-fires this trigger, which fails and writes again, forever.
+    if (after.thumbnailError) return;
 
     const { sessionId, recId } = event.params;
     const bucket = getStorage().bucket(BUCKET);
@@ -236,8 +239,10 @@ exports.extractAudio = onDocumentUpdated(
     const after = event.data?.after?.data();
     if (!after) return;
     // Fires on every recording-doc update — only act on the one transition
-    // that matters: compose finished, audio not yet extracted.
-    if (!after.composedPath || after.audioPath) return;
+    // that matters: compose finished, audio not yet extracted, no previous
+    // failure. (The error flag matters: the failure write itself re-fires
+    // this trigger, and audioPath alone can't stop the loop.)
+    if (!after.composedPath || after.audioPath || after.audioExtractError) return;
     // Screen recordings are video-only: nothing to extract or transcribe.
     if (after.kind === "screen") return;
 
@@ -263,8 +268,9 @@ exports.extractAudio = onDocumentUpdated(
     } catch (err) {
       console.error(`Audio extraction failed for ${recId}:`, err);
       await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
-        // Mark audioPath so this doesn't retrigger forever; surface the failure.
-        audioPath: null,
+        // The guard checks this flag — it's what stops the failure write from
+        // re-triggering the extraction forever.
+        audioExtractError: String(err.message ?? err),
         transcriptStatus: "error",
         transcriptError: "Audio extraction failed",
       });
@@ -577,10 +583,17 @@ exports.syncSessionSummary = onDocumentWritten(
       )
     ).filter(Boolean);
 
-    await getFirestore().doc(`sessions/${sessionId}`).update({
-      recordingCount: recsSnap.size,
-      previews,
-    });
+    try {
+      await getFirestore().doc(`sessions/${sessionId}`).update({
+        recordingCount: recsSnap.size,
+        previews,
+      });
+    } catch (err) {
+      // Project teardown deletes recordings before the session doc — each of
+      // those deletes lands here after the session is already gone. (gRPC
+      // code 5 = NOT_FOUND.)
+      if (err.code !== 5) throw err;
+    }
   },
 );
 

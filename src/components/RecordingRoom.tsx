@@ -98,6 +98,60 @@ function formatElapsed(ms: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// Per-tile speaking detector: RMS of the tile's audio with a short hold so
+// the green highlight doesn't flicker off between words. A muted mic
+// (track.enabled = false) produces silence, so muted tiles never light up.
+function useIsSpeaking(stream: MediaStream | null, enabled: boolean) {
+  const [speaking, setSpeaking] = useState(false);
+
+  useEffect(() => {
+    if (!enabled || !stream || stream.getAudioTracks().length === 0) return;
+
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext();
+    } catch {
+      return;
+    }
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Float32Array(analyser.fftSize);
+    void ctx.resume().catch(() => {});
+
+    const THRESHOLD = 0.04; // RMS above this counts as speech
+    const HOLD_MS = 400; // keep the highlight through short pauses
+    let lastAbove = 0;
+    let current = false;
+    let raf: number;
+    const tick = () => {
+      analyser.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / data.length);
+      const now = performance.now();
+      if (rms > THRESHOLD) lastAbove = now;
+      const next = now - lastAbove < HOLD_MS;
+      if (next !== current) {
+        current = next;
+        setSpeaking(next);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      source.disconnect();
+      void ctx.close().catch(() => {});
+      setSpeaking(false);
+    };
+  }, [stream, enabled]);
+
+  return speaking && enabled;
+}
+
 function VideoTile({
   stream,
   muted,
@@ -105,6 +159,7 @@ function VideoTile({
   label,
   badge,
   actions,
+  highlightSpeaking,
 }: {
   stream: MediaStream | null;
   muted: boolean;
@@ -112,15 +167,23 @@ function VideoTile({
   label: string;
   badge?: string;
   actions?: React.ReactNode;
+  highlightSpeaking?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const speaking = useIsSpeaking(stream, !!highlightSpeaking);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream;
   }, [stream]);
 
   return (
-    <div className="relative aspect-video overflow-hidden rounded-2xl border border-neutral-800 bg-black">
+    <div
+      className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${
+        speaking
+          ? "border-emerald-500/70 shadow-[0_0_0_3px_rgba(16,185,129,0.55)]"
+          : "border-neutral-800"
+      }`}
+    >
       <video
         ref={videoRef}
         autoPlay
@@ -128,7 +191,12 @@ function VideoTile({
         playsInline
         className={`h-full w-full object-contain ${mirrored ? "-scale-x-100" : ""}`}
       />
-      <span className="absolute bottom-3 left-3 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur">
+      <span
+        className={`absolute bottom-3 left-3 flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur ${
+          speaking ? "text-emerald-300" : ""
+        }`}
+      >
+        {speaking && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
         {label}
       </span>
       {badge && (
@@ -307,9 +375,14 @@ type ChatMessage = {
   sentAt: Timestamp | null;
 };
 
-function useChatMessages(sessionId: string) {
+// `enabled` must stay false until this client is actually allowed to read
+// chat (host, or admitted+joined) — a listener that starts earlier gets
+// permission-denied and Firestore terminates it permanently, leaving chat
+// dead for the whole session even after admission.
+function useChatMessages(sessionId: string, enabled: boolean) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   useEffect(() => {
+    if (!enabled) return;
     const q = query(
       collection(db, "sessions", sessionId, "chat"),
       orderBy("sentAt", "asc"),
@@ -331,7 +404,7 @@ function useChatMessages(sessionId: string) {
         }),
       );
     });
-  }, [sessionId]);
+  }, [sessionId, enabled]);
   return messages;
 }
 
@@ -503,7 +576,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const isRecordingParticipant = role !== "producer";
   const canModerate = role === "host";
   const canRename = role === "host" || role === "producer";
-  const participantDocs = useParticipantDocs(sessionId, role === "host" || role === "producer");
+  // Producers only gain list access once admitted — subscribing earlier
+  // permanently kills the listener (see useChatMessages).
+  const participantDocs = useParticipantDocs(sessionId, role === "host" || (role === "producer" && joined));
   const pendingRequests = participantDocs.filter((p) => p.admission === "pending");
 
   // A knock is easy to miss if the host is on another tab — chime once per
@@ -554,7 +629,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     return rows;
   });
 
-  const chatMessages = useChatMessages(sessionId);
+  const chatMessages = useChatMessages(sessionId, role === "host" || joined);
   // While the panel is open every message counts as seen — synced during
   // render (React's "adjust state when inputs change" pattern) so the badge
   // only ever tracks messages that land while the panel is closed.
@@ -1208,6 +1283,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           stream={localStream}
           muted
           mirrored
+          highlightSpeaking
           label={`${name} (You) · ${ROLE_LABEL[role]}`}
           badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
         />
@@ -1226,6 +1302,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             key={peer.uid}
             stream={peer.stream}
             muted={false}
+            highlightSpeaking
             label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
             badge={CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState}
             actions={
