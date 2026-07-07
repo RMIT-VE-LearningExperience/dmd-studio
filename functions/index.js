@@ -613,3 +613,30 @@ exports.purgeArchivedSessions = onSchedule(
     if (snap.empty) console.log("No archived sessions past retention.");
   },
 );
+
+// ---------------------------------------------------------------------------
+// Usage stats: measures what the app actually stores so the dashboard can
+// show an approximate monthly cost. Recurring cost here is storage — hosting
+// scales to zero and functions/transcription bill per use.
+// ---------------------------------------------------------------------------
+
+exports.computeUsageStats = onSchedule(
+  {
+    schedule: "every 24 hours",
+    region: "us-central1",
+    memory: "256MiB",
+    timeoutSeconds: 300,
+  },
+  async () => {
+    const [files] = await getStorage().bucket(BUCKET).getFiles();
+    let storageBytes = 0;
+    for (const f of files) storageBytes += Number(f.metadata.size ?? 0);
+
+    await getFirestore().doc("meta/usage").set({
+      storageBytes,
+      objectCount: files.length,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    console.log(`Usage: ${files.length} objects, ${(storageBytes / 1024 ** 3).toFixed(2)} GB`);
+  },
+);
