@@ -377,7 +377,10 @@ exports.produceEpisode = onDocumentCreated(
     document: "sessions/{sessionId}/episodes/{episodeId}",
     region: "us-central1",
     memory: "4GiB",
-    cpu: 4,
+    // Event-driven functions cap at 540s, so encode speed is the only lever
+    // on how long a session can be episoded — 8 vCPUs roughly doubles x264
+    // throughput vs 4, and since billing is cpu×time it's ~cost-neutral.
+    cpu: 8,
     concurrency: 1,
     timeoutSeconds: 540,
   },

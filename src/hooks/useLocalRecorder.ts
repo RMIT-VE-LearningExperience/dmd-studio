@@ -376,25 +376,30 @@ export function useLocalRecorder(
           throw new Error(`${pending.length} chunk(s) failed to upload after retries`);
         }
 
-        await setDoc(doc(db, "sessions", sessionId, "recordings", docIdFor(takeSession.take)), {
-          uid,
-          take: takeSession.take,
-          displayName: takeSession.meta.displayName,
-          role: takeSession.meta.role,
-          kind: variant,
-          folder: folderFor(takeSession.take),
-          audioOnly: takeSession.audioOnly,
-          chunkCount: takeSession.chunkCount,
-          totalBytes: takeSession.totalBytes,
-          mimeType: recorder.mimeType || "video/webm",
-          extension: takeSession.extension,
-          ...(!isScreen && !takeSession.audioOnly
-            ? { thumbnailPath: `${folderFor(takeSession.take)}/thumbnail.jpg` }
-            : {}),
-          startedAtMs: takeSession.startedAtMs,
-          uploadState: "complete",
-          completedAt: serverTimestamp(),
-        });
+        // merge: the async thumbnail capture writes thumbnailPath onto this
+        // doc if (and only if) its upload succeeded — a plain set would wipe
+        // it, and re-adding it unconditionally here would claim a thumbnail
+        // that may never have made it to Storage.
+        await setDoc(
+          doc(db, "sessions", sessionId, "recordings", docIdFor(takeSession.take)),
+          {
+            uid,
+            take: takeSession.take,
+            displayName: takeSession.meta.displayName,
+            role: takeSession.meta.role,
+            kind: variant,
+            folder: folderFor(takeSession.take),
+            audioOnly: takeSession.audioOnly,
+            chunkCount: takeSession.chunkCount,
+            totalBytes: takeSession.totalBytes,
+            mimeType: recorder.mimeType || "video/webm",
+            extension: takeSession.extension,
+            startedAtMs: takeSession.startedAtMs,
+            uploadState: "complete",
+            completedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
         await deleteTakeMeta(takeSession.recId);
 
         setStatus("uploaded");
@@ -406,7 +411,7 @@ export function useLocalRecorder(
 
     stopPromiseRef.current = promise;
     return promise;
-  }, [sessionId, uid, isScreen, variant, uploadChunk, chunkPathFor, folderFor, docIdFor]);
+  }, [sessionId, uid, variant, uploadChunk, chunkPathFor, folderFor, docIdFor]);
 
   return { status, error, progress, start, stopAndUpload };
 }
