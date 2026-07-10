@@ -12,7 +12,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { getRtcConfig } from "@/lib/rtcConfig";
+import { getRtcConfig, warmIceServers } from "@/lib/rtcConfig";
 
 export type ParticipantRole = "host" | "guest" | "producer";
 
@@ -42,11 +42,67 @@ type ParticipantData = {
   screenShareId?: string | null;
 };
 
+type RtcDiagnostic = {
+  kind: "camera" | "screen-send" | "screen-recv";
+  remoteUid: string;
+  remoteName?: string;
+  offerer?: boolean;
+  connectionState?: RTCPeerConnectionState;
+  iceConnectionState?: RTCIceConnectionState;
+  iceGatheringState?: RTCIceGatheringState;
+  signalingState?: RTCSignalingState;
+  localCandidateCount?: number;
+  remoteCandidateCount?: number;
+  lastStep?: string;
+  lastError?: string | null;
+};
+
 // Deterministic per-pair ID so both sides agree on one signaling doc, and on
 // who is the offerer (the lexicographically smaller uid) — avoids glare
 // without needing a lock or negotiation round-trip.
 function pairId(a: string, b: string) {
   return [a, b].sort().join("_");
+}
+
+function rtcKey(kind: RtcDiagnostic["kind"], remoteUid: string) {
+  return `${kind}_${remoteUid}`;
+}
+
+function describeRtcError(err: unknown) {
+  if (err instanceof Error) return `${err.name}: ${err.message}`.slice(0, 240);
+  return String(err).slice(0, 240);
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined));
+}
+
+// Browsers reject addIceCandidate until a remote description is set, and
+// Firestore can deliver the candidate snapshot before the offer/answer doc.
+// Candidates applied too early used to be dropped permanently — if the one
+// that mattered (often the TURN relay candidate) arrived first, the
+// connection sat at "connecting" forever. Queue them until the description
+// lands, then flush.
+function createCandidateGate(
+  pc: RTCPeerConnection,
+  onApplied: () => void,
+  onError: (err: unknown) => void,
+) {
+  let ready = false;
+  const queue: RTCIceCandidateInit[] = [];
+  const apply = (candidate: RTCIceCandidateInit) => {
+    pc.addIceCandidate(new RTCIceCandidate(candidate)).then(onApplied).catch(onError);
+  };
+  return {
+    push(candidate: RTCIceCandidateInit) {
+      if (ready) apply(candidate);
+      else queue.push(candidate);
+    },
+    open() {
+      ready = true;
+      while (queue.length > 0) apply(queue.shift()!);
+    },
+  };
 }
 
 // Best-effort teardown of one signaling doc and its ICE-candidate
@@ -79,11 +135,24 @@ export function useWebRTCMesh(
   const localStreamRef = useRef<MediaStream | null>(null);
   const localScreenStreamRef = useRef<MediaStream | null>(null);
   const localShareIdRef = useRef<string | null>(null);
+  const rtcDiagnosticsRef = useRef<Record<string, RtcDiagnostic>>({});
   // Every signaling doc this client participated in, swept on leave so the
   // connections subcollection doesn't accumulate dead offer/answer docs.
   const signalingDocsRef = useRef<Set<string>>(new Set());
+  // Reconnect machinery: last-known role/name per peer (to rebuild a
+  // connection without waiting for another participants snapshot), retry
+  // budgets, and pending watchdog/reconnect timers.
+  const participantsMetaRef = useRef<Record<string, { role: ParticipantRole; displayName: string }>>({});
+  const retryCountsRef = useRef<Record<string, number>>({});
+  const watchdogsRef = useRef<Record<string, number>>({});
+  const reconnectTimersRef = useRef<Record<string, number>>({});
+  const reconnectRef = useRef<(remoteUid: string, budgeted: boolean) => void>(() => {});
 
   const disconnectFromPeer = useCallback((remoteUid: string) => {
+    window.clearTimeout(watchdogsRef.current[remoteUid]);
+    delete watchdogsRef.current[remoteUid];
+    window.clearTimeout(reconnectTimersRef.current[remoteUid]);
+    delete reconnectTimersRef.current[remoteUid];
     peerConnectionsRef.current[remoteUid]?.close();
     delete peerConnectionsRef.current[remoteUid];
     unsubscribersRef.current[remoteUid]?.();
@@ -102,9 +171,34 @@ export function useWebRTCMesh(
       const stream = localStreamRef.current;
       if (!stream) return;
 
-      const pc = new RTCPeerConnection(getRtcConfig());
+      const rtcConfig = getRtcConfig();
+      const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionsRef.current[remoteUid] = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      const diagnosticKey = rtcKey("camera", remoteUid);
+      let localCandidateCount = 0;
+      let remoteCandidateCount = 0;
+      const writeDiagnostic = (patch: Partial<RtcDiagnostic>) => {
+        const next: RtcDiagnostic = {
+          ...rtcDiagnosticsRef.current[diagnosticKey],
+          ...patch,
+          kind: "camera",
+          remoteUid,
+          remoteName,
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          iceGatheringState: pc.iceGatheringState,
+          signalingState: pc.signalingState,
+          localCandidateCount,
+          remoteCandidateCount,
+        };
+        rtcDiagnosticsRef.current[diagnosticKey] = next;
+        void setDoc(
+          doc(db, "sessions", sessionId, "participants", localUid),
+          { rtc: { [diagnosticKey]: withoutUndefined({ ...next, updatedAt: serverTimestamp() }) } },
+          { merge: true },
+        ).catch(() => {});
+      };
 
       const remoteStream = new MediaStream();
       setPeers((prev) => ({
@@ -120,14 +214,7 @@ export function useWebRTCMesh(
 
       pc.ontrack = (event) => {
         event.streams[0]?.getTracks().forEach((track) => remoteStream.addTrack(track));
-      };
-
-      pc.onconnectionstatechange = () => {
-        setPeers((prev) =>
-          prev[remoteUid]
-            ? { ...prev, [remoteUid]: { ...prev[remoteUid], connectionState: pc.connectionState } }
-            : prev,
-        );
+        writeDiagnostic({ lastStep: "remote-track" });
       };
 
       signalingDocsRef.current.add(pairId(localUid, remoteUid));
@@ -136,9 +223,60 @@ export function useWebRTCMesh(
       const answerCandidates = collection(connRef, "answerCandidates");
       const isOfferer = localUid < remoteUid;
 
+      pc.onconnectionstatechange = () => {
+        setPeers((prev) =>
+          prev[remoteUid]
+            ? { ...prev, [remoteUid]: { ...prev[remoteUid], connectionState: pc.connectionState } }
+            : prev,
+        );
+        writeDiagnostic({ lastStep: `connection-${pc.connectionState}` });
+        if (pc.connectionState === "connected") {
+          window.clearTimeout(watchdogsRef.current[remoteUid]);
+          delete watchdogsRef.current[remoteUid];
+          retryCountsRef.current[remoteUid] = 0;
+        } else if (pc.connectionState === "failed" && isOfferer) {
+          // The offerer drives recovery; the answerer follows the fresh
+          // offer it produces (see the re-offer branch below).
+          writeDiagnostic({ lastStep: "failed-retrying" });
+          reconnectRef.current(remoteUid, true);
+        }
+      };
+      pc.oniceconnectionstatechange = () => {
+        writeDiagnostic({ lastStep: `ice-${pc.iceConnectionState}` });
+      };
+      pc.onicegatheringstatechange = () => {
+        writeDiagnostic({ lastStep: `gathering-${pc.iceGatheringState}` });
+      };
+
+      // A connection that hasn't succeeded within this window is wedged
+      // (e.g. its decisive candidate was lost) — tear it down and renegotiate
+      // rather than showing "Connecting…" forever.
+      if (isOfferer) {
+        window.clearTimeout(watchdogsRef.current[remoteUid]);
+        watchdogsRef.current[remoteUid] = window.setTimeout(() => {
+          if (pc.connectionState !== "connected") {
+            writeDiagnostic({ lastStep: "watchdog-retrying" });
+            reconnectRef.current(remoteUid, true);
+          }
+        }, 20_000);
+      }
+
+      writeDiagnostic({
+        offerer: isOfferer,
+        lastStep: "created",
+        lastError: null,
+      });
+
       if (isOfferer) {
         pc.onicecandidate = (event) => {
-          if (event.candidate) addDoc(offerCandidates, event.candidate.toJSON());
+          if (event.candidate) {
+            localCandidateCount += 1;
+            void addDoc(offerCandidates, event.candidate.toJSON()).catch((err) => {
+              writeDiagnostic({ lastStep: "write-offer-candidate-failed", lastError: describeRtcError(err) });
+            });
+          } else {
+            writeDiagnostic({ lastStep: "offer-candidates-complete" });
+          }
         };
 
         (async () => {
@@ -157,18 +295,34 @@ export function useWebRTCMesh(
             { offer: { sdp: offerDescription.sdp, type: offerDescription.type } },
             { merge: true },
           );
-        })();
+          writeDiagnostic({ lastStep: "offer-written" });
+        })().catch((err) => {
+          writeDiagnostic({ lastStep: "offer-failed", lastError: describeRtcError(err) });
+        });
 
+        const candidateGate = createCandidateGate(
+          pc,
+          () => writeDiagnostic({ lastStep: "answer-candidate-applied" }),
+          (err) => writeDiagnostic({ lastStep: "answer-candidate-failed", lastError: describeRtcError(err) }),
+        );
         const unsubAnswer = onSnapshot(connRef, (snap) => {
           const data = snap.data();
           if (!pc.currentRemoteDescription && data?.answer) {
-            pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            pc.setRemoteDescription(new RTCSessionDescription(data.answer))
+              .then(() => {
+                writeDiagnostic({ lastStep: "answer-applied" });
+                candidateGate.open();
+              })
+              .catch((err) => {
+                writeDiagnostic({ lastStep: "answer-failed", lastError: describeRtcError(err) });
+              });
           }
         });
         const unsubCandidates = onSnapshot(answerCandidates, (snap) => {
           snap.docChanges().forEach((change) => {
             if (change.type === "added") {
-              pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+              remoteCandidateCount += 1;
+              candidateGate.push(change.doc.data() as RTCIceCandidateInit);
             }
           });
         });
@@ -178,13 +332,37 @@ export function useWebRTCMesh(
         };
       } else {
         pc.onicecandidate = (event) => {
-          if (event.candidate) addDoc(answerCandidates, event.candidate.toJSON());
+          if (event.candidate) {
+            localCandidateCount += 1;
+            void addDoc(answerCandidates, event.candidate.toJSON()).catch((err) => {
+              writeDiagnostic({ lastStep: "write-answer-candidate-failed", lastError: describeRtcError(err) });
+            });
+          } else {
+            writeDiagnostic({ lastStep: "answer-candidates-complete" });
+          }
         };
 
+        const candidateGate = createCandidateGate(
+          pc,
+          () => writeDiagnostic({ lastStep: "offer-candidate-applied" }),
+          (err) => writeDiagnostic({ lastStep: "offer-candidate-failed", lastError: describeRtcError(err) }),
+        );
+        let appliedOfferSdp: string | null = null;
         const unsubOffer = onSnapshot(connRef, async (snap) => {
           const data = snap.data();
-          if (!pc.currentRemoteDescription && data?.offer) {
+          if (!data?.offer) return;
+          if (data.offer.sdp === appliedOfferSdp) return;
+          if (appliedOfferSdp !== null) {
+            // A different offer on an already-negotiated connection means the
+            // offerer gave up and restarted — rebuild our side to match.
+            writeDiagnostic({ lastStep: "re-offer-rebuilding" });
+            reconnectRef.current(remoteUid, false);
+            return;
+          }
+          appliedOfferSdp = data.offer.sdp;
+          try {
             await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            candidateGate.open();
             const answerDescription = await pc.createAnswer();
             await pc.setLocalDescription(answerDescription);
             await setDoc(
@@ -192,12 +370,16 @@ export function useWebRTCMesh(
               { answer: { sdp: answerDescription.sdp, type: answerDescription.type } },
               { merge: true },
             );
+            writeDiagnostic({ lastStep: "answer-written" });
+          } catch (err) {
+            writeDiagnostic({ lastStep: "answer-failed", lastError: describeRtcError(err) });
           }
         });
         const unsubCandidates = onSnapshot(offerCandidates, (snap) => {
           snap.docChanges().forEach((change) => {
             if (change.type === "added") {
-              pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+              remoteCandidateCount += 1;
+              candidateGate.push(change.doc.data() as RTCIceCandidateInit);
             }
           });
         });
@@ -209,6 +391,34 @@ export function useWebRTCMesh(
     },
     [sessionId, localUid],
   );
+
+  // Tears a wedged/failed connection down and negotiates a fresh one (the
+  // offerer path wipes the signaling doc first, so this is always a clean
+  // restart). Budgeted callers (watchdog, failed state) stop after 3
+  // attempts; unbudgeted ones (answerer following a re-offer) always run.
+  const reconnectPeer = useCallback(
+    (remoteUid: string, budgeted: boolean) => {
+      const meta = participantsMetaRef.current[remoteUid];
+      if (!meta) return;
+      if (budgeted) {
+        const attempts = retryCountsRef.current[remoteUid] ?? 0;
+        if (attempts >= 3) return; // leave the failed state visible rather than thrash forever
+        retryCountsRef.current[remoteUid] = attempts + 1;
+      }
+      // The original credentials may have expired or never loaded — refresh
+      // them so the rebuilt connection doesn't silently run STUN-only.
+      void warmIceServers();
+      disconnectFromPeer(remoteUid);
+      reconnectTimersRef.current[remoteUid] = window.setTimeout(() => {
+        delete reconnectTimersRef.current[remoteUid];
+        connectToPeer(remoteUid, meta.role, meta.displayName);
+      }, 400);
+    },
+    [connectToPeer, disconnectFromPeer],
+  );
+  useEffect(() => {
+    reconnectRef.current = reconnectPeer;
+  }, [reconnectPeer]);
 
   const disconnectScreen = useCallback((sharerUid: string) => {
     screenRecvPcsRef.current[sharerUid]?.pc.close();
@@ -257,16 +467,19 @@ export function useWebRTCMesh(
           { merge: true },
         );
       })();
+      const candidateGate = createCandidateGate(pc, () => {}, () => {});
       const unsubAnswer = onSnapshot(connRef, (snap) => {
         const data = snap.data();
         if (!pc.currentRemoteDescription && data?.answer) {
-          pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          pc.setRemoteDescription(new RTCSessionDescription(data.answer))
+            .then(() => candidateGate.open())
+            .catch(() => {});
         }
       });
       const unsubCandidates = onSnapshot(answerCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === "added") {
-            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            candidateGate.push(change.doc.data() as RTCIceCandidateInit);
           }
         });
       });
@@ -323,23 +536,30 @@ export function useWebRTCMesh(
       pc.onicecandidate = (event) => {
         if (event.candidate) addDoc(answerCandidates, event.candidate.toJSON());
       };
+      const candidateGate = createCandidateGate(pc, () => {}, () => {});
       const unsubOffer = onSnapshot(connRef, async (snap) => {
         const data = snap.data();
         if (!pc.currentRemoteDescription && data?.offer) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-          const answerDescription = await pc.createAnswer();
-          await pc.setLocalDescription(answerDescription);
-          await setDoc(
-            connRef,
-            { answer: { sdp: answerDescription.sdp, type: answerDescription.type } },
-            { merge: true },
-          );
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            candidateGate.open();
+            const answerDescription = await pc.createAnswer();
+            await pc.setLocalDescription(answerDescription);
+            await setDoc(
+              connRef,
+              { answer: { sdp: answerDescription.sdp, type: answerDescription.type } },
+              { merge: true },
+            );
+          } catch {
+            // A failed screen negotiation isn't worth crashing the room over;
+            // re-sharing creates a fresh shareId-scoped doc anyway.
+          }
         }
       });
       const unsubCandidates = onSnapshot(offerCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === "added") {
-            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            candidateGate.push(change.doc.data() as RTCIceCandidateInit);
           }
         });
       });
@@ -413,6 +633,9 @@ export function useWebRTCMesh(
           const uid = change.doc.id;
           if (uid === localUid) return;
           const data = change.doc.data() as ParticipantData;
+          // Kept fresh for the reconnect path, which rebuilds a connection
+          // without waiting for another participants snapshot.
+          participantsMetaRef.current[uid] = { role: data.role, displayName: data.displayName };
 
           // Guests/producers must be admitted by the host before the mesh
           // will talk to them (the host's own doc carries no admission field).
@@ -491,6 +714,10 @@ export function useWebRTCMesh(
       Object.values(screenRecvPcsRef.current).forEach(({ pc }) => pc.close());
       // eslint-disable-next-line react-hooks/exhaustive-deps
       Object.values(unsubscribersRef.current).forEach((fn) => fn());
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      Object.values(watchdogsRef.current).forEach((id) => window.clearTimeout(id));
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      Object.values(reconnectTimersRef.current).forEach((id) => window.clearTimeout(id));
     };
   }, []);
 

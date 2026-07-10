@@ -66,7 +66,7 @@ type Props = {
   sessionId: string;
   role: ParticipantRole;
   initialName: string;
-  onJoin: (stream: MediaStream, displayName: string, startMuted: boolean) => void;
+  onJoin: (stream: MediaStream, displayName: string, startMuted: boolean) => void | Promise<void>;
 };
 
 export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
@@ -170,11 +170,18 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
     if (videoRef.current) videoRef.current.srcObject = stream;
   }, [stream]);
 
-  const handleJoin = () => {
+  const handleJoin = async () => {
     if (!stream || !name.trim()) return;
     setJoining(true);
     joinedRef.current = true;
-    onJoin(stream, name.trim(), micMuted);
+    try {
+      await warmIceServers();
+      await onJoin(stream, name.trim(), micMuted);
+    } catch (err) {
+      joinedRef.current = false;
+      setJoining(false);
+      setError(err instanceof Error ? err.message : "Could not join the studio. Please try again.");
+    }
   };
 
   return (
