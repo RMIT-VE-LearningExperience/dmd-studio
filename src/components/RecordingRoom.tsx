@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Camera, CameraOff, MessageCircle, Mic, MicOff, Monitor, ScrollText } from "lucide-react";
 import {
@@ -18,7 +18,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { useWebRTCMesh, type ParticipantRole } from "@/hooks/useWebRTCMesh";
+import { useWebRTCMesh, type ParticipantRole, type RemotePeer } from "@/hooks/useWebRTCMesh";
 import { useLocalRecorder } from "@/hooks/useLocalRecorder";
 import { getVideoResolutionLabel, type CaptureSettings } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
@@ -56,6 +56,17 @@ const ROLE_LABEL: Record<ParticipantRole, string> = {
   guest: "Guest",
   producer: "Producer",
 };
+
+// Tile badge: surfaces the mesh's automatic retries instead of an
+// indistinguishable eternal "Connecting…", and gives a next step once the
+// retry budget is spent.
+function peerBadge(peer: RemotePeer) {
+  if (peer.retriesExhausted) return "Connection failed — ask them to refresh their page";
+  if (peer.retryAttempt && peer.connectionState !== "connected") {
+    return `Reconnecting… (attempt ${peer.retryAttempt}/3)`;
+  }
+  return CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState;
+}
 
 function InvitePanel({ sessionId }: { sessionId: string }) {
   const [copied, setCopied] = useState<string | null>(null);
@@ -233,7 +244,7 @@ function ControlButton({
       disabled={disabled}
       title={title}
       aria-pressed={active}
-      className={`flex h-14 w-14 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`flex h-12 w-12 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14 ${
         active === true
           ? "border-neutral-500 bg-neutral-800 text-white"
           : "border-neutral-700 bg-neutral-950 text-white hover:border-neutral-500 hover:bg-neutral-900"
@@ -292,11 +303,11 @@ function AdmissionRequests({
   if (requests.length === 0) return null;
 
   return (
-    <div className="fixed left-1/2 top-16 z-50 flex -translate-x-1/2 flex-col gap-2">
+    <div className="fixed left-1/2 top-16 z-50 flex w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 flex-col gap-2 sm:w-auto">
       {requests.map((p) => (
         <div
           key={p.uid}
-          className="flex items-center gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 px-4 py-3 shadow-lg backdrop-blur"
+          className="flex flex-wrap items-center justify-end gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 px-4 py-3 shadow-lg backdrop-blur"
         >
           <span className="text-sm">
             <span className="font-semibold">{p.displayName || "Someone"}</span>{" "}
@@ -345,7 +356,7 @@ function UploadStatusPanel({ rows }: { rows: UploadRow[] }) {
   if (rows.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 flex w-64 flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur">
+    <div className="fixed bottom-32 right-4 z-40 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur sm:bottom-4">
       <p className="text-xs font-semibold text-neutral-400">Track uploads</p>
       {rows.map((row) => (
         <div key={row.key} className="flex items-center justify-between gap-2 text-xs">
@@ -439,7 +450,7 @@ function ChatPanel({
   };
 
   return (
-    <div className="fixed bottom-24 right-4 z-40 flex h-96 w-80 flex-col rounded-2xl border border-neutral-700 bg-neutral-900/95 shadow-xl backdrop-blur">
+    <div className="fixed bottom-24 left-4 right-4 z-40 flex h-96 flex-col rounded-2xl border border-neutral-700 bg-neutral-900/95 shadow-xl backdrop-blur sm:left-auto sm:w-80">
       <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-2.5">
         <span className="text-xs font-semibold text-neutral-300">Chat</span>
         <button onClick={onClose} className="text-xs text-neutral-500 hover:text-neutral-300">
@@ -564,7 +575,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [now, setNow] = useState(() => Date.now());
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
   const [removed, setRemoved] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<{ id: number; text: string; tone: "info" | "success" | "error" }[]>([]);
+  const toastIdRef = useRef(0);
   const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -647,6 +659,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       sentAt: serverTimestamp(),
     }).catch(() => {});
   };
+
+  const pushToast = useCallback((text: string, tone: "info" | "success" | "error" = "info") => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev.slice(-3), { id, text, tone }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4500);
+  }, []);
+
   const {
     peers,
     screenPeers,
@@ -656,6 +677,28 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     startScreenShare,
     stopScreenShare,
   } = useWebRTCMesh(sessionId, uid, role);
+
+  // Join/leave announcements — derived by diffing the mesh's peer list, so
+  // they fire exactly when someone appears in / drops from the room.
+  const prevPeerNamesRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (!joined) {
+      prevPeerNamesRef.current = {};
+      return;
+    }
+    const current: Record<string, string> = {};
+    peers.forEach((p) => {
+      current[p.uid] = p.displayName || "Someone";
+    });
+    const prev = prevPeerNamesRef.current;
+    Object.entries(current).forEach(([peerUid, peerName]) => {
+      if (!(peerUid in prev)) pushToast(`${peerName} joined the studio`);
+    });
+    Object.entries(prev).forEach(([peerUid, peerName]) => {
+      if (!(peerUid in current)) pushToast(`${peerName} left the studio`);
+    });
+    prevPeerNamesRef.current = current;
+  }, [peers, joined, pushToast]);
   const {
     status: recordingStatus,
     error: recordingError,
@@ -669,6 +712,19 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     stopAndUpload: stopScreenRec,
   } = useLocalRecorder(sessionId, uid, "screen");
   const screenStartedTakeRef = useRef(0);
+
+  // Upload outcome toasts — status transitions, not renders, drive these.
+  const prevRecStatusRef = useRef(recordingStatus);
+  useEffect(() => {
+    const prev = prevRecStatusRef.current;
+    prevRecStatusRef.current = recordingStatus;
+    if (prev === recordingStatus) return;
+    if (recordingStatus === "uploaded") {
+      pushToast("Your recording finished uploading ✓", "success");
+    } else if (recordingStatus === "error") {
+      pushToast("Your recording upload hit a problem — rejoin to resume it.", "error");
+    }
+  }, [recordingStatus, pushToast]);
 
   // The session doc's `recording` field is the single source of truth for
   // whether a take is running — the host flips it and every recording
@@ -930,7 +986,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           t.enabled = false;
         });
         setMicOn(false);
-        setNotice("The host muted your microphone — you can unmute yourself anytime.");
+        pushToast("The host muted your microphone — you can unmute yourself anytime.");
         void setDoc(snap.ref, { muteRequested: null }, { merge: true }).catch(() => {});
       }
       // Removal forces the same teardown as Leave, minus the confirm.
@@ -946,17 +1002,21 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       }
     });
     return unsub;
-  }, [joined, role, sessionId, uid, stopAndUpload, stopScreenRec, leave]);
+  }, [joined, role, sessionId, uid, stopAndUpload, stopScreenRec, leave, pushToast]);
 
-  // Notices self-dismiss.
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(null), 5000);
-    return () => clearTimeout(timer);
-  }, [notice]);
+  // Everyone the mesh knows about but hasn't finished connecting to —
+  // recording now would likely produce a session missing their track.
+  const notReadyPeers = peers.filter((p) => p.connectionState !== "connected");
 
   const toggleRecording = async () => {
     const sessionRef = doc(db, "sessions", sessionId);
+    if (!recordingFlag?.active && notReadyPeers.length > 0) {
+      const names = notReadyPeers.map((p) => p.displayName || "A guest").join(", ");
+      const sure = window.confirm(
+        `${names} ${notReadyPeers.length === 1 ? "isn't" : "aren't"} fully connected yet — they may not hear the session or record properly. Start recording anyway?`,
+      );
+      if (!sure) return;
+    }
     if (recordingFlag?.active) {
       await setDoc(sessionRef, { recording: { ...recordingFlag, active: false } }, { merge: true });
     } else {
@@ -1147,7 +1207,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     (recordingStatus === "finishing" || screenRecStatus === "finishing");
 
   return (
-    <div className="flex min-h-screen flex-col gap-6 bg-neutral-950 p-6 text-neutral-100">
+    <div className="flex min-h-screen flex-col gap-4 bg-neutral-950 p-4 text-neutral-100 sm:gap-6 sm:p-6">
       <ResumeUploadsBanner sessionId={sessionId} uid={uid} />
       {canModerate && <AdmissionRequests sessionId={sessionId} requests={pendingRequests} />}
       {(role === "host" || role === "producer") && <UploadStatusPanel rows={uploadRows} />}
@@ -1159,9 +1219,22 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           onClose={() => setChatOpen(false)}
         />
       )}
-      {notice && (
-        <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full border border-neutral-700 bg-neutral-900/95 px-4 py-2 text-xs font-medium text-neutral-200 shadow-lg backdrop-blur">
-          {notice}
+      {toasts.length > 0 && (
+        <div className="fixed left-1/2 top-4 z-50 flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 flex-col items-center gap-1.5">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className={`rounded-full border px-4 py-2 text-xs font-medium shadow-lg backdrop-blur ${
+                t.tone === "success"
+                  ? "border-emerald-700 bg-neutral-900/95 text-emerald-300"
+                  : t.tone === "error"
+                    ? "border-red-700 bg-neutral-900/95 text-red-300"
+                    : "border-neutral-700 bg-neutral-900/95 text-neutral-200"
+              }`}
+            >
+              {t.text}
+            </div>
+          ))}
         </div>
       )}
       {prompterOpen && (
@@ -1304,7 +1377,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             muted={false}
             highlightSpeaking
             label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
-            badge={CONNECTION_LABEL[peer.connectionState] ?? peer.connectionState}
+            badge={peerBadge(peer)}
             actions={
               canModerate || canRename ? (
                 <>
@@ -1355,7 +1428,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       </div>
 
       <footer className="flex flex-col items-center gap-3">
-        <div className="flex items-center gap-3">
+        {role === "host" && !isRecordingActive && notReadyPeers.length > 0 && (
+          <p className="px-4 text-center text-xs text-amber-400">
+            Waiting for {notReadyPeers.map((p) => p.displayName || "a guest").join(", ")} to
+            connect — recording now may miss their track.
+          </p>
+        )}
+        <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
           <ControlButton onClick={toggleMic} active={micOn} title={micOn ? "Mute microphone" : "Unmute microphone"}>
             {micOn ? (
               <Mic aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />

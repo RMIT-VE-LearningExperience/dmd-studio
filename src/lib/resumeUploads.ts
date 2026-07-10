@@ -82,6 +82,9 @@ async function doResume(
       mimeType: meta.mimeType,
       extension: meta.extension,
       startedAtMs: meta.startedAtMs,
+      // The precise stop time died with the previous tab — chunks are cut
+      // every 5s, so chunk count gives a close-enough duration.
+      durationMs: parts.length * 5000,
       uploadState: "complete",
       completedAt: serverTimestamp(),
     });

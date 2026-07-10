@@ -22,6 +22,10 @@ export type RemotePeer = {
   displayName: string;
   stream: MediaStream | null;
   connectionState: RTCPeerConnectionState;
+  // Set while an automatic reconnect is underway (1-based attempt number),
+  // and latched true once the retry budget is spent without success.
+  retryAttempt?: number;
+  retriesExhausted?: boolean;
 };
 
 export type RemoteScreen = {
@@ -209,6 +213,8 @@ export function useWebRTCMesh(
           displayName: remoteName,
           stream: remoteStream,
           connectionState: "connecting",
+          // Survives the placeholder → real-connection swap during a retry.
+          retryAttempt: prev[remoteUid]?.retryAttempt,
         },
       }));
 
@@ -226,7 +232,16 @@ export function useWebRTCMesh(
       pc.onconnectionstatechange = () => {
         setPeers((prev) =>
           prev[remoteUid]
-            ? { ...prev, [remoteUid]: { ...prev[remoteUid], connectionState: pc.connectionState } }
+            ? {
+                ...prev,
+                [remoteUid]: {
+                  ...prev[remoteUid],
+                  connectionState: pc.connectionState,
+                  ...(pc.connectionState === "connected"
+                    ? { retryAttempt: undefined, retriesExhausted: undefined }
+                    : {}),
+                },
+              }
             : prev,
         );
         writeDiagnostic({ lastStep: `connection-${pc.connectionState}` });
@@ -400,15 +415,37 @@ export function useWebRTCMesh(
     (remoteUid: string, budgeted: boolean) => {
       const meta = participantsMetaRef.current[remoteUid];
       if (!meta) return;
+      let attempt = retryCountsRef.current[remoteUid] ?? 0;
       if (budgeted) {
-        const attempts = retryCountsRef.current[remoteUid] ?? 0;
-        if (attempts >= 3) return; // leave the failed state visible rather than thrash forever
-        retryCountsRef.current[remoteUid] = attempts + 1;
+        if (attempt >= 3) {
+          // Budget spent — leave a clearly-failed tile rather than thrash.
+          setPeers((prev) =>
+            prev[remoteUid]
+              ? { ...prev, [remoteUid]: { ...prev[remoteUid], retriesExhausted: true } }
+              : prev,
+          );
+          return;
+        }
+        attempt += 1;
+        retryCountsRef.current[remoteUid] = attempt;
       }
       // The original credentials may have expired or never loaded — refresh
       // them so the rebuilt connection doesn't silently run STUN-only.
       void warmIceServers();
       disconnectFromPeer(remoteUid);
+      // Keep a placeholder tile up during the rebuild so the peer doesn't
+      // blink out of the grid, and so the UI can say which attempt this is.
+      setPeers((prev) => ({
+        ...prev,
+        [remoteUid]: {
+          uid: remoteUid,
+          role: meta.role,
+          displayName: meta.displayName,
+          stream: null,
+          connectionState: "connecting",
+          retryAttempt: attempt > 0 ? attempt : undefined,
+        },
+      }));
       reconnectTimersRef.current[remoteUid] = window.setTimeout(() => {
         delete reconnectTimersRef.current[remoteUid];
         connectToPeer(remoteUid, meta.role, meta.displayName);

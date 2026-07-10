@@ -33,6 +33,8 @@ type RecordingDoc = {
   mimeType: string;
   extension: string;
   startedAtMs: number | null;
+  durationMs: number | null;
+  label: string | null;
   uploadState: "recording" | "uploading" | "complete";
   completedAt: Timestamp | null;
   composedPath: string | null;
@@ -62,6 +64,46 @@ function formatDate(ts: Timestamp | null) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+// Exact duration when the recorder captured one; chunk-count approximation
+// (5s slices) for takes recorded before durations existed.
+function takeDuration(rec: RecordingDoc) {
+  if (rec.durationMs) return ` · ${formatDuration(Math.round(rec.durationMs / 1000))}`;
+  if (rec.chunkCount > 0) return ` · ~${formatDuration(rec.chunkCount * 5)}`;
+  return "";
+}
+
+function TakeTitle({ rec }: { rec: RecordingDoc }) {
+  return (
+    <p className="text-sm font-semibold">
+      {rec.label ? (
+        <>
+          {rec.label} <span className="font-normal text-neutral-500">· {rec.displayName || "Unknown"}</span>
+        </>
+      ) : (
+        rec.displayName || "Unknown"
+      )}{" "}
+      <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
+      {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
+      {rec.audioOnly && <span className="font-normal text-neutral-500"> · Audio</span>}
+      {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
+    </p>
+  );
+}
+
+// Rules allow the host (or the track's owner) to write; anyone else gets a
+// clear error instead of a silent failure.
+async function renameTake(sessionId: string, rec: RecordingDoc) {
+  const next = window.prompt('Name this take (e.g. "Intro", "Q&A")', rec.label ?? "");
+  if (next === null) return;
+  try {
+    await updateDoc(doc(db, "sessions", sessionId, "recordings", rec.id), {
+      label: next.trim() || null,
+    });
+  } catch {
+    window.alert("Couldn't rename this take — only the host or the person who recorded it can.");
+  }
 }
 
 async function listSortedParts(sessionId: string, rec: RecordingDoc): Promise<StorageReference[]> {
@@ -476,19 +518,21 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
     <div className="flex flex-col gap-4 rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold">
-            {rec.displayName || "Unknown"}{" "}
-            <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
-            {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
-            {rec.audioOnly && <span className="font-normal text-neutral-500"> · Audio</span>}
-            {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
-          </p>
+          <TakeTitle rec={rec} />
           <p className="text-xs text-neutral-500">
             {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)}
-            {rec.chunkCount > 0 && ` · ~${formatDuration(rec.chunkCount * 5)}`} · .{rec.extension}
+            {takeDuration(rec)} · .{rec.extension}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => renameTake(sessionId, rec)}
+            disabled={deleting}
+            title="Name this take"
+            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
+          >
+            Rename
+          </button>
           <button
             onClick={download}
             disabled={downloading || deleting}
@@ -606,19 +650,13 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
     <div className="flex flex-col gap-4 rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold">
-            {rec.displayName || "Unknown"}{" "}
-            <span className="font-normal capitalize text-neutral-500">· {rec.role}</span>
-            {rec.kind === "screen" && <span className="font-normal text-neutral-500"> · Screen</span>}
-            {rec.audioOnly && <span className="font-normal text-neutral-500"> · Audio</span>}
-            {rec.take > 1 && <span className="font-normal text-neutral-500"> · Take {rec.take}</span>}
-          </p>
+          <TakeTitle rec={rec} />
           <p className="text-xs text-neutral-500">
             {formatDate(rec.completedAt)} · {formatBytes(rec.totalBytes)}
-            {rec.chunkCount > 0 && ` · ~${formatDuration(rec.chunkCount * 5)}`} · .{rec.extension}
+            {takeDuration(rec)} · .{rec.extension}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {full.phase !== "ready" && (
             <button
               onClick={loadFull}
@@ -628,6 +666,14 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
               {full.phase === "fetching" ? `Loading… ${loadPercent}%` : "Load full recording"}
             </button>
           )}
+          <button
+            onClick={() => renameTake(sessionId, rec)}
+            disabled={deleting}
+            title="Name this take"
+            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
+          >
+            Rename
+          </button>
           <button
             onClick={download}
             disabled={full.phase === "fetching" || deleting}
@@ -713,6 +759,8 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             folder: (data.folder as string) ?? null,
             audioOnly: (data.audioOnly as boolean) ?? false,
             startedAtMs: (data.startedAtMs as number) ?? null,
+            durationMs: (data.durationMs as number) ?? null,
+            label: (data.label as string) ?? null,
             uploadState: (data.uploadState as RecordingDoc["uploadState"]) ?? "complete",
             chunkCount: (data.chunkCount as number) ?? 0,
             totalBytes: (data.totalBytes as number) ?? 0,

@@ -395,6 +395,7 @@ export function useLocalRecorder(
             mimeType: recorder.mimeType || "video/webm",
             extension: takeSession.extension,
             startedAtMs: takeSession.startedAtMs,
+            durationMs: Date.now() - takeSession.startedAtMs,
             uploadState: "complete",
             completedAt: serverTimestamp(),
           },
