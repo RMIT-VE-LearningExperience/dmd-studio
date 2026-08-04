@@ -11,12 +11,13 @@ type Props = {
   // starts scrolling by itself so the reader's hands stay free.
   recordingActive?: boolean;
   onClose: () => void;
+  mode?: "floating" | "embedded";
 };
 
 // Per-participant script overlay: paste or load a .txt, then auto-scroll it
 // while recording. The script persists on the session (scripts/{uid}) so a
 // refresh — or prepping days before the call — doesn't lose it.
-export default function Teleprompter({ sessionId, uid, recordingActive, onClose }: Props) {
+export default function Teleprompter({ sessionId, uid, recordingActive, onClose, mode = "floating" }: Props) {
   const [text, setText] = useState<string | null>(null); // null while loading
   const [fromShared, setFromShared] = useState(false);
   const [draft, setDraft] = useState("");
@@ -24,7 +25,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
   const [prevActive, setPrevActive] = useState(!!recordingActive);
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(18); // pixels per second
+  const [speed, setSpeed] = useState(4); // 1-10 scale; actual scroll speed is speed * 5 px/s
   const [fontSize, setFontSize] = useState(28);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -34,6 +35,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const scrollSpeed = speed * 5;
 
   // Max offset before the last line has reached the top of the viewport.
   const getMaxOffset = useCallback(() => {
@@ -103,7 +105,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
     const step = (now: number) => {
       const dt = now - last;
       last = now;
-      const clamped = applyOffset(offsetRef.current + (dt / 1000) * speed);
+      const clamped = applyOffset(offsetRef.current + (dt / 1000) * scrollSpeed);
       if (clamped >= getMaxOffset() - 0.5) {
         setPlaying(false);
         return;
@@ -112,7 +114,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, applyOffset, getMaxOffset]);
+  }, [playing, scrollSpeed, applyOffset, getMaxOffset]);
 
   // Arrow keys nudge the script up/down — works whether auto-scroll is
   // playing or paused, so an operator can correct position on the fly.
@@ -164,6 +166,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
   }, [dragging]);
 
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (mode === "embedded") return;
     const panel = panelRef.current;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
@@ -210,18 +213,24 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
   return (
     <div
       ref={panelRef}
-      className={`fixed z-50 flex max-h-[55vh] w-[min(calc(100vw-2rem),42rem)] flex-col overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-950/95 shadow-2xl backdrop-blur ${
-        position ? "" : "left-1/2 top-14 -translate-x-1/2"
-      }`}
-      style={position ? { left: position.x, top: position.y } : undefined}
+      className={
+        mode === "embedded"
+          ? "flex h-full min-h-[28rem] flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
+          : `fixed z-50 flex max-h-[55vh] w-[min(calc(100vw-2rem),42rem)] flex-col overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-950/95 shadow-2xl backdrop-blur ${
+              position ? "" : "left-1/2 top-14 -translate-x-1/2"
+            }`
+      }
+      style={mode === "floating" && position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-2.5">
         <div
           onPointerDown={startDrag}
-          className="mr-auto min-w-32 cursor-move touch-none select-none text-xs font-semibold text-neutral-300"
-          title="Drag to move script"
+          className={`mr-auto min-w-32 touch-none select-none text-xs font-semibold text-neutral-300 ${
+            mode === "floating" ? "cursor-move" : ""
+          }`}
+          title={mode === "floating" ? "Drag to move script" : undefined}
         >
-          Script
+          Teleprompter
           {fromShared && !editing && (
             <span className="ml-1.5 font-normal text-neutral-500">· provided by the host</span>
           )}
@@ -245,17 +254,18 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
               Restart
             </button>
             <label className="flex items-center gap-1.5 text-[11px] text-neutral-500">
-              <span className="w-16 tabular-nums text-neutral-400">{speed} px/s</span>
+              <span className="w-24 text-neutral-400">Scroll speed</span>
               <input
                 type="range"
-                min={4}
-                max={40}
+                min={1}
+                max={10}
                 step={1}
                 value={speed}
                 onChange={(e) => setSpeed(Number(e.target.value))}
                 className="w-24 accent-indigo-500"
-                aria-label="Script scroll speed"
+                aria-label="Scroll speed"
               />
+              <span className="w-4 tabular-nums text-neutral-400">{speed}</span>
             </label>
             <label className="flex items-center gap-1.5 text-[11px] text-neutral-500">
               Size
@@ -331,7 +341,14 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose 
           </div>
         </div>
       ) : (
-        <div ref={scrollRef} className="overflow-hidden px-8 py-4">
+        <div
+          ref={scrollRef}
+          onWheel={(e) => {
+            e.preventDefault();
+            applyOffset(offsetRef.current + e.deltaY);
+          }}
+          className="min-h-0 flex-1 overflow-hidden px-8 py-4"
+        >
           {/* Moved via transform (see applyOffset) rather than the viewport's
               scrollTop, so the animation runs on the compositor thread. */}
           <div ref={contentRef} style={{ willChange: "transform" }}>

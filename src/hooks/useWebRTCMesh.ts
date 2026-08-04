@@ -26,6 +26,7 @@ export type RemotePeer = {
   // and latched true once the retry budget is spent without success.
   retryAttempt?: number;
   retriesExhausted?: boolean;
+  muted?: boolean;
 };
 
 export type RemoteScreen = {
@@ -44,6 +45,7 @@ type ParticipantData = {
   // viewers key their receive-side signaling doc off it, so a stop/re-share
   // never collides with stale offer/answer docs from the previous share.
   screenShareId?: string | null;
+  muted?: boolean;
 };
 
 type RtcDiagnostic = {
@@ -146,7 +148,7 @@ export function useWebRTCMesh(
   // Reconnect machinery: last-known role/name per peer (to rebuild a
   // connection without waiting for another participants snapshot), retry
   // budgets, and pending watchdog/reconnect timers.
-  const participantsMetaRef = useRef<Record<string, { role: ParticipantRole; displayName: string }>>({});
+  const participantsMetaRef = useRef<Record<string, { role: ParticipantRole; displayName: string; muted?: boolean }>>({});
   const retryCountsRef = useRef<Record<string, number>>({});
   const watchdogsRef = useRef<Record<string, number>>({});
   const reconnectTimersRef = useRef<Record<string, number>>({});
@@ -170,7 +172,7 @@ export function useWebRTCMesh(
   }, []);
 
   const connectToPeer = useCallback(
-    (remoteUid: string, remoteRole: ParticipantRole, remoteName: string) => {
+    (remoteUid: string, remoteRole: ParticipantRole, remoteName: string, remoteMuted = false) => {
       if (peerConnectionsRef.current[remoteUid]) return;
       const stream = localStreamRef.current;
       if (!stream) return;
@@ -213,6 +215,7 @@ export function useWebRTCMesh(
           displayName: remoteName,
           stream: remoteStream,
           connectionState: "connecting",
+          muted: remoteMuted,
           // Survives the placeholder → real-connection swap during a retry.
           retryAttempt: prev[remoteUid]?.retryAttempt,
         },
@@ -443,12 +446,13 @@ export function useWebRTCMesh(
           displayName: meta.displayName,
           stream: null,
           connectionState: "connecting",
+          muted: !!meta.muted,
           retryAttempt: attempt > 0 ? attempt : undefined,
         },
       }));
       reconnectTimersRef.current[remoteUid] = window.setTimeout(() => {
         delete reconnectTimersRef.current[remoteUid];
-        connectToPeer(remoteUid, meta.role, meta.displayName);
+        connectToPeer(remoteUid, meta.role, meta.displayName, !!meta.muted);
       }, 400);
     },
     [connectToPeer, disconnectFromPeer],
@@ -645,6 +649,19 @@ export function useWebRTCMesh(
     );
   }, [sessionId, localUid, closeAllScreenSends]);
 
+  const replaceLocalStream = useCallback(async (stream: MediaStream) => {
+    localStreamRef.current = stream;
+    const tracks = stream.getTracks();
+    await Promise.all(
+      Object.values(peerConnectionsRef.current).flatMap((pc) =>
+        pc.getSenders().map((sender) => {
+          const nextTrack = tracks.find((track) => track.kind === sender.track?.kind);
+          return nextTrack ? sender.replaceTrack(nextTrack) : Promise.resolve();
+        }),
+      ),
+    );
+  }, []);
+
   const join = useCallback(
     // displayName arrives here (not as a hook arg) because the user can edit
     // it in the lobby right up until the moment they join.
@@ -672,7 +689,7 @@ export function useWebRTCMesh(
           const data = change.doc.data() as ParticipantData;
           // Kept fresh for the reconnect path, which rebuilds a connection
           // without waiting for another participants snapshot.
-          participantsMetaRef.current[uid] = { role: data.role, displayName: data.displayName };
+          participantsMetaRef.current[uid] = { role: data.role, displayName: data.displayName, muted: !!data.muted };
 
           // Guests/producers must be admitted by the host before the mesh
           // will talk to them (the host's own doc carries no admission field).
@@ -688,11 +705,19 @@ export function useWebRTCMesh(
             if (peerConnectionsRef.current[uid]) {
               setPeers((prev) =>
                 prev[uid]
-                  ? { ...prev, [uid]: { ...prev[uid], displayName: data.displayName, role: data.role } }
+                  ? {
+                      ...prev,
+                      [uid]: {
+                        ...prev[uid],
+                        displayName: data.displayName,
+                        role: data.role,
+                        muted: !!data.muted,
+                      },
+                    }
                   : prev,
               );
             } else {
-              connectToPeer(uid, data.role, data.displayName);
+              connectToPeer(uid, data.role, data.displayName, !!data.muted);
             }
             // Follow their screen-share state, and offer them ours if we're
             // sharing when they arrive.
@@ -764,6 +789,7 @@ export function useWebRTCMesh(
     localScreenStream,
     join,
     leave,
+    replaceLocalStream,
     startScreenShare,
     stopScreenShare,
   };

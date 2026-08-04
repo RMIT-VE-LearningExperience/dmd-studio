@@ -60,12 +60,15 @@ export type MediaDeviceChoice = {
   label: string;
 };
 
-// Only meaningful after getUserMedia has been granted once — before that,
-// browsers return devices with empty labels.
-export async function listMediaDevices(): Promise<{
+export type MediaDeviceLists = {
   cameras: MediaDeviceChoice[];
   microphones: MediaDeviceChoice[];
-}> {
+  speakers: MediaDeviceChoice[];
+};
+
+// Only meaningful after getUserMedia has been granted once — before that,
+// browsers return devices with empty labels.
+export async function listMediaDevices(): Promise<MediaDeviceLists> {
   const devices = await navigator.mediaDevices.enumerateDevices();
   const toChoice = (d: MediaDeviceInfo, fallback: string): MediaDeviceChoice => ({
     deviceId: d.deviceId,
@@ -74,6 +77,7 @@ export async function listMediaDevices(): Promise<{
   return {
     cameras: devices.filter((d) => d.kind === "videoinput").map((d, i) => toChoice(d, `Camera ${i + 1}`)),
     microphones: devices.filter((d) => d.kind === "audioinput").map((d, i) => toChoice(d, `Microphone ${i + 1}`)),
+    speakers: devices.filter((d) => d.kind === "audiooutput").map((d, i) => toChoice(d, `Speaker ${i + 1}`)),
   };
 }
 

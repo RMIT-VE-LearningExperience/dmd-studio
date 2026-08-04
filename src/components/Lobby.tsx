@@ -21,6 +21,29 @@ const ROLE_LABEL: Record<ParticipantRole, string> = {
   producer: "Producer",
 };
 
+const DEVICE_STORAGE_KEY = "dmd-studio-devices";
+
+type SavedDevices = {
+  cameraId?: string;
+  micId?: string;
+  speakerId?: string;
+};
+
+function readSavedDevices(): SavedDevices {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(DEVICE_STORAGE_KEY) ?? "{}") as SavedDevices;
+  } catch {
+    return {};
+  }
+}
+
+function saveDevices(devices: SavedDevices) {
+  if (typeof window === "undefined") return;
+  const current = readSavedDevices();
+  window.localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify({ ...current, ...devices }));
+}
+
 // Live input-level bar driven by an AnalyserNode, so people can see their
 // mic is actually picking them up before they join.
 function MicMeter({ stream }: { stream: MediaStream | null }) {
@@ -83,18 +106,36 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const [name, setName] = useState(initialName);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
   const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
+  const [speakers, setSpeakers] = useState<MediaDeviceChoice[]>([]);
   const [cameraId, setCameraId] = useState("");
   const [micId, setMicId] = useState("");
+  const [speakerId, setSpeakerId] = useState("");
   const [resolution, setResolution] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
   const micMutedRef = useRef(false);
 
-  const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string) => {
+  const applySpeaker = useCallback(async (deviceId?: string) => {
+    const video = videoRef.current;
+    if (!video || !deviceId || !("setSinkId" in video)) return;
+    try {
+      await (video as HTMLVideoElement & { setSinkId: (sinkId: string) => Promise<void> }).setSinkId(deviceId);
+      saveDevices({ speakerId: deviceId });
+    } catch {
+      // Some browsers/devices reject speaker routing; keep the default output.
+    }
+  }, []);
+
+  const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string, speakerDeviceId?: string) => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     try {
-      const next = await getBestUserMedia(videoDeviceId, audioDeviceId, settingsRef.current);
+      const saved = readSavedDevices();
+      const next = await getBestUserMedia(
+        videoDeviceId ?? saved.cameraId,
+        audioDeviceId ?? saved.micId,
+        settingsRef.current,
+      );
       setError(null);
       // A fresh getUserMedia stream always starts enabled — reapply any mute
       // the guest already chose (e.g. after switching microphones).
@@ -110,13 +151,20 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
       const devices = await listMediaDevices();
       setCameras(devices.cameras);
       setMicrophones(devices.microphones);
-      setCameraId(next.getVideoTracks()[0]?.getSettings().deviceId ?? "");
-      setMicId(next.getAudioTracks()[0]?.getSettings().deviceId ?? "");
+      setSpeakers(devices.speakers);
+      const nextCameraId = next.getVideoTracks()[0]?.getSettings().deviceId ?? "";
+      const nextMicId = next.getAudioTracks()[0]?.getSettings().deviceId ?? "";
+      const nextSpeakerId = speakerDeviceId ?? saved.speakerId ?? devices.speakers[0]?.deviceId ?? "";
+      setCameraId(nextCameraId);
+      setMicId(nextMicId);
+      setSpeakerId(nextSpeakerId);
+      saveDevices({ cameraId: nextCameraId, micId: nextMicId, speakerId: nextSpeakerId });
+      void applySpeaker(nextSpeakerId);
     } catch (err) {
       setStream(null);
       setError(friendlyMediaError(err));
     }
-  }, []);
+  }, [applySpeaker]);
 
   const toggleMic = () => {
     const next = !micMuted;
@@ -168,7 +216,8 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream;
-  }, [stream]);
+    void applySpeaker(speakerId);
+  }, [stream, speakerId, applySpeaker]);
 
   const handleJoin = async () => {
     if (!stream || !name.trim()) return;
@@ -236,7 +285,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
               <p className="text-sm text-neutral-300">{error}</p>
               <button
-                onClick={() => acquire()}
+                onClick={() => acquire(cameraId || undefined, micId || undefined, speakerId || undefined)}
                 className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium hover:border-neutral-500"
               >
                 Try again
@@ -283,7 +332,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
             <span className="text-xs font-medium text-neutral-500">Camera</span>
             <select
               value={cameraId}
-              onChange={(e) => acquire(e.target.value, micId || undefined)}
+              onChange={(e) => acquire(e.target.value, micId || undefined, speakerId || undefined)}
               disabled={cameras.length === 0}
               className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-50"
             >
@@ -299,7 +348,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
             <span className="text-xs font-medium text-neutral-500">Microphone</span>
             <select
               value={micId}
-              onChange={(e) => acquire(cameraId || undefined, e.target.value)}
+              onChange={(e) => acquire(cameraId || undefined, e.target.value, speakerId || undefined)}
               disabled={microphones.length === 0}
               className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-50"
             >
@@ -310,6 +359,33 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
               ))}
             </select>
             <MicMeter stream={stream} />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Speaker</span>
+            <select
+              value={speakerId}
+              onChange={(e) => {
+                setSpeakerId(e.target.value);
+                void applySpeaker(e.target.value);
+              }}
+              disabled={
+                speakers.length === 0 ||
+                typeof HTMLMediaElement === "undefined" ||
+                !("setSinkId" in HTMLMediaElement.prototype)
+              }
+              className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              {speakers.length === 0 ? (
+                <option value="">Default speaker</option>
+              ) : (
+                speakers.map((s) => (
+                  <option key={s.deviceId} value={s.deviceId}>
+                    {s.label}
+                  </option>
+                ))
+              )}
+            </select>
           </label>
 
           <button

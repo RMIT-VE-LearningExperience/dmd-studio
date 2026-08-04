@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import {
@@ -64,6 +64,23 @@ function formatDate(ts: Timestamp | null) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+async function downloadStoragePath(path: string, filename: string) {
+  const blob = await getBlob(storageRef(storage, path));
+  triggerDownload(blob, filename);
 }
 
 // Exact duration when the recorder captured one; chunk-count approximation
@@ -248,13 +265,7 @@ function EpisodeRow({ sessionId, episode }: { sessionId: string; episode: Episod
   const download = async () => {
     setDownloading(true);
     try {
-      const blob = await getBlob(storageRef(storage, episode.path!));
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `episode-take${episode.take}.mp4`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      await downloadStoragePath(episode.path!, `episode-take${episode.take}.mp4`);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Download failed — try again.");
     } finally {
@@ -408,12 +419,10 @@ function TranscriptPanel({ rec }: { rec: RecordingDoc }) {
   };
 
   const downloadTxt = () => {
-    const url = URL.createObjectURL(new Blob([rec.transcript!], { type: "text/plain" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${rec.displayName || rec.role}-take${rec.take}-transcript.txt`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    triggerDownload(
+      new Blob([rec.transcript!], { type: "text/plain" }),
+      `${rec.displayName || rec.role}-take${rec.take}-transcript.txt`,
+    );
   };
 
   return (
@@ -450,6 +459,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingRaw, setDownloadingRaw] = useState(false);
   const [downloadingAudio, setDownloadingAudio] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -470,13 +480,10 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
   const download = async () => {
     setDownloading(true);
     try {
-      const blob = await getBlob(storageRef(storage, rec.composedPath!));
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${rec.displayName || rec.role}-take${rec.take}.${rec.extension}`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      await downloadStoragePath(
+        rec.composedPath!,
+        `${rec.displayName || rec.role}-take${rec.take}-processed.${rec.extension}`,
+      );
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Download failed — try again.");
     } finally {
@@ -484,16 +491,22 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
     }
   };
 
+  const downloadRaw = async () => {
+    setDownloadingRaw(true);
+    try {
+      const blob = await stitchRecording(sessionId, rec, () => {});
+      triggerDownload(blob, `${rec.displayName || rec.role}-take${rec.take}-raw.${rec.extension}`);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Raw download failed — try again.");
+    } finally {
+      setDownloadingRaw(false);
+    }
+  };
+
   const downloadAudio = async () => {
     setDownloadingAudio(true);
     try {
-      const blob = await getBlob(storageRef(storage, rec.audioPath!));
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${rec.displayName || rec.role}-take${rec.take}.wav`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      await downloadStoragePath(rec.audioPath!, `${rec.displayName || rec.role}-take${rec.take}-audio.wav`);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Audio download failed — try again.");
     } finally {
@@ -533,22 +546,32 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
           >
             Rename
           </button>
-          <button
-            onClick={download}
-            disabled={downloading || deleting}
-            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
-          >
-            {downloading ? "Downloading…" : "Download"}
-          </button>
-          {rec.audioPath && (
+          <div className="flex flex-wrap items-center gap-2 rounded-full border border-neutral-700 px-2 py-1">
+            <span className="px-2 text-xs font-medium text-neutral-400">Download</span>
             <button
-              onClick={downloadAudio}
-              disabled={downloadingAudio || deleting}
-              className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
+              onClick={download}
+              disabled={downloading || deleting}
+              className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
             >
-              {downloadingAudio ? "Downloading…" : "Audio (WAV)"}
+              {downloading ? "Processed…" : "Processed"}
             </button>
-          )}
+            <button
+              onClick={downloadRaw}
+              disabled={downloadingRaw || deleting}
+              className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
+            >
+              {downloadingRaw ? "Raw…" : "Raw"}
+            </button>
+            {rec.audioPath && (
+              <button
+                onClick={downloadAudio}
+                disabled={downloadingAudio || deleting}
+                className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {downloadingAudio ? "Audio…" : "Audio"}
+              </button>
+            )}
+          </div>
           <button
             onClick={remove}
             disabled={deleting || downloading}
@@ -578,6 +601,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
 function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc }) {
   const [full, setFull] = useState<FullFetchState>({ phase: "idle" });
   const [deleting, setDeleting] = useState(false);
+  const autoLoadedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -615,11 +639,17 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
   const download = async () => {
     const result = await loadFull();
     if (!result) return;
-    const a = document.createElement("a");
-    a.href = result.url;
-    a.download = `${rec.displayName || rec.role}-take${rec.take}.${rec.extension}`;
-    a.click();
+    triggerDownload(result.blob, `${rec.displayName || rec.role}-take${rec.take}-raw.${rec.extension}`);
   };
+
+  useEffect(() => {
+    if (autoLoadedRef.current || full.phase !== "idle") return;
+    autoLoadedRef.current = true;
+    // Load the stitched take automatically so the inline player represents
+    // the whole recording, not just the first MediaRecorder chunk.
+    void loadFull();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec.id]);
 
   const remove = async () => {
     const who = rec.displayName || rec.role;

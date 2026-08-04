@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Camera, CameraOff, MessageCircle, Mic, MicOff, Monitor, ScrollText } from "lucide-react";
+import {
+  MessageCircle,
+  Mic,
+  MicOff,
+  Monitor,
+  ScrollText,
+  Settings,
+  Video,
+  VideoOff,
+} from "lucide-react";
 import {
   addDoc,
   collection,
@@ -20,7 +29,13 @@ import {
 import { db } from "@/lib/firebase";
 import { useWebRTCMesh, type ParticipantRole, type RemotePeer } from "@/hooks/useWebRTCMesh";
 import { useLocalRecorder } from "@/hooks/useLocalRecorder";
-import { getVideoResolutionLabel, type CaptureSettings } from "@/lib/media";
+import {
+  getBestUserMedia,
+  getVideoResolutionLabel,
+  listMediaDevices,
+  type CaptureSettings,
+  type MediaDeviceChoice,
+} from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import Lobby from "@/components/Lobby";
 import Teleprompter from "@/components/Teleprompter";
@@ -56,6 +71,33 @@ const ROLE_LABEL: Record<ParticipantRole, string> = {
   guest: "Guest",
   producer: "Producer",
 };
+
+const DEVICE_STORAGE_KEY = "dmd-studio-devices";
+
+type SavedDevices = {
+  cameraId?: string;
+  micId?: string;
+  speakerId?: string;
+};
+
+function readSavedDevices(): SavedDevices {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(DEVICE_STORAGE_KEY) ?? "{}") as SavedDevices;
+  } catch {
+    return {};
+  }
+}
+
+function saveDevices(devices: SavedDevices) {
+  if (typeof window === "undefined") return;
+  const current = readSavedDevices();
+  window.localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify({ ...current, ...devices }));
+}
+
+function canSelectSpeakerOutput() {
+  return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+}
 
 // Tile badge: surfaces the mesh's automatic retries instead of an
 // indistinguishable eternal "Connecting…", and gives a next step once the
@@ -131,8 +173,8 @@ function useIsSpeaking(stream: MediaStream | null, enabled: boolean) {
     const data = new Float32Array(analyser.fftSize);
     void ctx.resume().catch(() => {});
 
-    const THRESHOLD = 0.04; // RMS above this counts as speech
-    const HOLD_MS = 400; // keep the highlight through short pauses
+    const THRESHOLD = 0.015; // RMS above this counts as speech
+    const HOLD_MS = 650; // keep the highlight through short pauses
     let lastAbove = 0;
     let current = false;
     let raf: number;
@@ -171,6 +213,7 @@ function VideoTile({
   badge,
   actions,
   highlightSpeaking,
+  speakerId,
 }: {
   stream: MediaStream | null;
   muted: boolean;
@@ -179,20 +222,35 @@ function VideoTile({
   badge?: string;
   actions?: React.ReactNode;
   highlightSpeaking?: boolean;
+  speakerId?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useIsSpeaking(stream, !!highlightSpeaking);
+  const reconnecting = !!badge?.startsWith("Reconnecting");
+  const failed = !!badge?.startsWith("Connection failed");
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream;
   }, [stream]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || muted || !speakerId || !("setSinkId" in video)) return;
+    void (video as HTMLVideoElement & { setSinkId: (sinkId: string) => Promise<void> })
+      .setSinkId(speakerId)
+      .catch(() => {});
+  }, [speakerId, muted]);
+
   return (
     <div
       className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${
         speaking
-          ? "border-emerald-500/70 shadow-[0_0_0_3px_rgba(16,185,129,0.55)]"
-          : "border-neutral-800"
+          ? "border-emerald-400 shadow-[0_0_0_4px_rgba(16,185,129,0.72),0_0_28px_rgba(16,185,129,0.3)]"
+          : failed
+            ? "border-red-500/70"
+            : reconnecting
+              ? "border-amber-400/80 shadow-[0_0_0_3px_rgba(251,191,36,0.35)]"
+              : "border-neutral-800"
       }`}
     >
       <video
@@ -211,9 +269,27 @@ function VideoTile({
         {label}
       </span>
       {badge && (
-        <span className="absolute right-3 top-3 rounded-md bg-black/60 px-2 py-1 text-xs font-medium backdrop-blur">
+        <span
+          className={`absolute right-3 top-3 rounded-md px-2 py-1 text-xs font-medium backdrop-blur ${
+            failed
+              ? "bg-red-950/85 text-red-200"
+              : reconnecting
+                ? "bg-amber-950/85 text-amber-200"
+                : "bg-black/60 text-neutral-200"
+          }`}
+        >
           {badge}
         </span>
+      )}
+      {(reconnecting || failed) && (
+        <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 rounded-xl bg-black/75 px-4 py-3 text-center backdrop-blur">
+          <p className={`text-sm font-semibold ${failed ? "text-red-200" : "text-amber-200"}`}>
+            {failed ? "Connection failed" : "Reconnecting…"}
+          </p>
+          <p className="mt-1 text-xs text-neutral-400">
+            {failed ? "Ask them to refresh and rejoin." : "Rebuilding the studio connection."}
+          </p>
+        </div>
       )}
       {actions && <div className="absolute left-3 top-3 flex gap-1.5">{actions}</div>}
       {!stream && (
@@ -231,12 +307,14 @@ function ControlButton({
   disabled,
   children,
   title,
+  label,
 }: {
   onClick: () => void;
   active?: boolean;
   disabled?: boolean;
   children: React.ReactNode;
   title: string;
+  label: string;
 }) {
   return (
     <button
@@ -244,13 +322,14 @@ function ControlButton({
       disabled={disabled}
       title={title}
       aria-pressed={active}
-      className={`flex h-12 w-12 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14 ${
+      className={`flex h-12 min-w-20 flex-col items-center justify-center gap-1 rounded-2xl border px-3 transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:min-w-24 ${
         active === true
           ? "border-neutral-500 bg-neutral-800 text-white"
           : "border-neutral-700 bg-neutral-950 text-white hover:border-neutral-500 hover:bg-neutral-900"
       }`}
     >
       {children}
+      <span className="text-[10px] font-medium leading-none text-neutral-400">{label}</span>
     </button>
   );
 }
@@ -270,6 +349,7 @@ type ParticipantDoc = {
   admission?: "pending" | "admitted" | "denied";
   upload?: UploadInfo;
   screenUpload?: UploadInfo;
+  muted?: boolean;
 };
 
 // Live view of every participant doc, for the host/producer control surfaces:
@@ -580,6 +660,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [devicesOpen, setDevicesOpen] = useState(false);
+  const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
+  const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
+  const [speakers, setSpeakers] = useState<MediaDeviceChoice[]>([]);
+  const [cameraId, setCameraId] = useState("");
+  const [micId, setMicId] = useState("");
+  const [speakerId, setSpeakerId] = useState("");
+  const [switchingDevice, setSwitchingDevice] = useState(false);
   const [prompterOpen, setPrompterOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSeenCount, setChatSeenCount] = useState(0);
@@ -674,6 +762,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     localScreenStream,
     join,
     leave,
+    replaceLocalStream,
     startScreenShare,
     stopScreenShare,
   } = useWebRTCMesh(sessionId, uid, role);
@@ -798,6 +887,55 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }
   }, [recordingFlag, joined, isRecordingParticipant, localScreenStream, screenRecStatus, startScreenRec, stopScreenRec, name, role, now]);
 
+  const refreshDevices = useCallback(async () => {
+    try {
+      const devices = await listMediaDevices();
+      setCameras(devices.cameras);
+      setMicrophones(devices.microphones);
+      setSpeakers(devices.speakers);
+    } catch {
+      // Device lists can fail if permissions are revoked mid-call.
+    }
+  }, []);
+
+  const applySpeaker = useCallback((nextSpeakerId: string) => {
+    setSpeakerId(nextSpeakerId);
+    saveDevices({ speakerId: nextSpeakerId });
+  }, []);
+
+  const switchInputDevice = async (nextCameraId = cameraId, nextMicId = micId) => {
+    if (!localStreamRef.current) return;
+    setSwitchingDevice(true);
+    try {
+      const next = await getBestUserMedia(
+        nextCameraId || undefined,
+        nextMicId || undefined,
+        sessionSettings,
+      );
+      next.getAudioTracks().forEach((track) => {
+        track.enabled = micOn;
+      });
+      next.getVideoTracks().forEach((track) => {
+        track.enabled = camOn;
+      });
+      await replaceLocalStream(next);
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = next;
+      setLocalStream(next);
+      const resolvedCameraId = next.getVideoTracks()[0]?.getSettings().deviceId ?? "";
+      const resolvedMicId = next.getAudioTracks()[0]?.getSettings().deviceId ?? "";
+      setCameraId(resolvedCameraId);
+      setMicId(resolvedMicId);
+      setResolutionLabel(getVideoResolutionLabel(next));
+      saveDevices({ cameraId: resolvedCameraId, micId: resolvedMicId });
+      void refreshDevices();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Could not switch devices.", "error");
+    } finally {
+      setSwitchingDevice(false);
+    }
+  };
+
   const toggleScreenShare = async () => {
     if (localScreenStream) {
       if (screenRecStatus === "recording") void stopScreenRec();
@@ -854,12 +992,25 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     setLocalStream(stream);
     setResolutionLabel(getVideoResolutionLabel(stream));
     setName(chosenName);
+    const savedDevices = readSavedDevices();
+    const resolvedCameraId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? "";
+    const resolvedMicId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? "";
+    setCameraId(resolvedCameraId);
+    setMicId(resolvedMicId);
+    setSpeakerId(savedDevices.speakerId ?? "");
+    saveDevices({ cameraId: resolvedCameraId, micId: resolvedMicId, speakerId: savedDevices.speakerId });
+    void refreshDevices();
     // The lobby already applied `enabled = false` to the audio tracks when
     // the guest chose to join muted — mirror that into the room's own toggle
     // state so the mic button/badge reflect it correctly from the first frame.
     setMicOn(!startMuted);
     if (role === "host") {
       await join(stream, chosenName);
+      await setDoc(
+        doc(db, "sessions", sessionId, "participants", uid),
+        { muted: startMuted },
+        { merge: true },
+      );
       setJoined(true);
       // Drives the "Live" badge on the dashboard.
       void setDoc(
@@ -880,6 +1031,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     ]);
     if (existing.data()?.admission === "admitted") {
       await join(stream, chosenName);
+      await setDoc(participantRef, { muted: startMuted }, { merge: true });
       setJoined(true);
       return;
     }
@@ -888,6 +1040,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       try {
         await setDoc(participantRef, { admission: "admitted" }, { merge: true });
         await join(stream, chosenName);
+        await setDoc(participantRef, { muted: startMuted }, { merge: true });
         setJoined(true);
         return;
       } catch {
@@ -901,6 +1054,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         displayName: chosenName,
         admission: "pending",
         active: false,
+        muted: startMuted,
         knockedAt: serverTimestamp(),
       },
       { merge: true },
@@ -944,6 +1098,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const requestMute = (peerUid: string) => {
     void updateDoc(doc(db, "sessions", sessionId, "participants", peerUid), {
       muteRequested: serverTimestamp(),
+      muted: true,
     }).catch(() => {});
   };
 
@@ -987,7 +1142,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         });
         setMicOn(false);
         pushToast("The host muted your microphone — you can unmute yourself anytime.");
-        void setDoc(snap.ref, { muteRequested: null }, { merge: true }).catch(() => {});
+        void setDoc(snap.ref, { muteRequested: null, muted: true }, { merge: true }).catch(() => {});
       }
       // Removal forces the same teardown as Leave, minus the confirm.
       if (data.admission === "denied" && !removedHandled) {
@@ -1035,10 +1190,16 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   };
 
   const toggleMic = () => {
+    const next = !micOn;
     localStreamRef.current?.getAudioTracks().forEach((t) => {
-      t.enabled = !micOn;
+      t.enabled = next;
     });
-    setMicOn(!micOn);
+    setMicOn(next);
+    void setDoc(
+      doc(db, "sessions", sessionId, "participants", uid),
+      { muted: !next },
+      { merge: true },
+    ).catch(() => {});
   };
 
   const toggleCam = () => {
@@ -1081,19 +1242,6 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         () => {},
       );
     }
-  };
-
-  const waitForUpload = async () => {
-    if (recordingStatus === "recording") void stopAndUpload();
-    if (screenRecStatus === "recording") void stopScreenRec();
-    await leave();
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-    setLocalStream(null);
-    setJoined(false);
-    setLeftAfterRecording(true);
-    setChatOpen(false);
-    setPrompterOpen(false);
-    setSettingsOpen(false);
   };
 
   const uploadPercent =
@@ -1202,9 +1350,87 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const tileCount = 1 + peers.length + screenPeers.length + (localScreenStream ? 1 : 0);
   const gridColsClass = tileCount > 2 ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2";
   const isRecordingActive = recordingFlag?.active ?? false;
-  const canWaitForUpload =
-    !isRecordingActive &&
-    (recordingStatus === "finishing" || screenRecStatus === "finishing");
+  const callTiles = (
+    <>
+      <VideoTile
+        stream={localStream}
+        muted
+        mirrored
+        highlightSpeaking
+        speakerId={speakerId}
+        label={`${name} (You) · ${ROLE_LABEL[role]}`}
+        badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
+      />
+
+      {localScreenStream && (
+        <VideoTile
+          stream={localScreenStream}
+          muted
+          speakerId={speakerId}
+          label={`${name} (Your screen)`}
+          badge={screenRecStatus === "recording" ? "REC" : undefined}
+        />
+      )}
+
+      {peers.map((peer) => (
+        <VideoTile
+          key={peer.uid}
+          stream={peer.stream}
+          muted={false}
+          highlightSpeaking
+          speakerId={speakerId}
+          label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
+          badge={[peer.muted ? "Muted" : null, peerBadge(peer)].filter(Boolean).join(" · ")}
+          actions={
+            canModerate || canRename ? (
+              <>
+                {canRename && (
+                  <button
+                    onClick={() => renameParticipant(peer.uid, peer.displayName)}
+                    title="Rename this participant"
+                    className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
+                  >
+                    Rename
+                  </button>
+                )}
+                {canModerate && (
+                  <>
+                    <button
+                      onClick={() => requestMute(peer.uid)}
+                      title="Mute their microphone"
+                      className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
+                    >
+                      Mute
+                    </button>
+                    <button
+                      onClick={() => removeParticipant(peer.uid, peer.displayName)}
+                      title="Remove from studio"
+                      className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-red-300 backdrop-blur transition hover:bg-black/80"
+                    >
+                      Remove
+                    </button>
+                  </>
+                )}
+              </>
+            ) : undefined
+          }
+        />
+      ))}
+
+      {screenPeers.map((sp) => (
+        <VideoTile
+          key={`screen-${sp.uid}`}
+          stream={sp.stream}
+          muted
+          speakerId={speakerId}
+          label={`${sp.displayName} · Screen`}
+          badge={CONNECTION_LABEL[sp.connectionState] ?? sp.connectionState}
+        />
+      ))}
+
+      {peers.length === 0 && <VideoTile stream={null} muted label="Waiting for others to join…" />}
+    </>
+  );
 
   return (
     <div className="flex min-h-screen flex-col gap-4 bg-neutral-950 p-4 text-neutral-100 sm:gap-6 sm:p-6">
@@ -1237,13 +1463,65 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           ))}
         </div>
       )}
-      {prompterOpen && (
-        <Teleprompter
-          sessionId={sessionId}
-          uid={uid}
-          recordingActive={isRecordingActive && !inCountdown}
-          onClose={() => setPrompterOpen(false)}
-        />
+      {devicesOpen && (
+        <div className="fixed right-4 top-16 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
+          <p className="text-xs font-semibold text-neutral-300">Devices</p>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Camera</span>
+            <select
+              value={cameraId}
+              onChange={(e) => void switchInputDevice(e.target.value, micId)}
+              disabled={
+                switchingDevice ||
+                recordingStatus === "recording" ||
+                cameras.length === 0 ||
+                !!sessionSettings.audioOnly
+              }
+              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              {cameras.map((camera) => (
+                <option key={camera.deviceId} value={camera.deviceId}>
+                  {camera.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Microphone</span>
+            <select
+              value={micId}
+              onChange={(e) => void switchInputDevice(cameraId, e.target.value)}
+              disabled={switchingDevice || recordingStatus === "recording" || microphones.length === 0}
+              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              {microphones.map((microphone) => (
+                <option key={microphone.deviceId} value={microphone.deviceId}>
+                  {microphone.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-neutral-500">Speaker</span>
+            <select
+              value={speakerId}
+              onChange={(e) => applySpeaker(e.target.value)}
+              disabled={speakers.length === 0 || !canSelectSpeakerOutput()}
+              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500 disabled:opacity-50"
+            >
+              <option value="">Default speaker</option>
+              {speakers.map((speaker) => (
+                <option key={speaker.deviceId} value={speaker.deviceId}>
+                  {speaker.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-[11px] leading-relaxed text-neutral-500">
+            Device choices are remembered for the next time you join this browser.
+            Camera and microphone switching is paused while recording.
+          </p>
+        </div>
       )}
       {settingsOpen && role === "host" && (
         <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
@@ -1303,16 +1581,18 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </div>
       )}
       {inCountdown && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
+        <div className="studio-fade-in fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
           <span className="text-8xl font-bold tabular-nums text-white">{countdownSeconds}</span>
           <span className="text-sm text-neutral-300">Recording is about to start</span>
         </div>
       )}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Link href="/projects" className="text-sm text-neutral-500 hover:text-neutral-300">
-            ← Projects
-          </Link>
+          {role === "host" && (
+            <Link href="/projects" className="text-sm text-neutral-500 hover:text-neutral-300">
+              ← Projects
+            </Link>
+          )}
           <span className="text-sm font-medium text-neutral-400">
             DMD Studio · <span className="text-neutral-200">{ROLE_LABEL[role]}</span>
           </span>
@@ -1325,6 +1605,19 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </div>
         <div className="flex items-center gap-3">
           {role === "host" && <InvitePanel sessionId={sessionId} />}
+          <button
+            onClick={() => {
+              setDevicesOpen((o) => !o);
+              void refreshDevices();
+            }}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+              devicesOpen
+                ? "border-indigo-500 text-indigo-300"
+                : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
+            }`}
+          >
+            Devices
+          </button>
           {role === "host" && (
             <button
               onClick={() => setSettingsOpen((o) => !o)}
@@ -1351,81 +1644,22 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </div>
       </header>
 
-      <div className={`grid flex-1 grid-cols-1 gap-4 ${gridColsClass}`}>
-        <VideoTile
-          stream={localStream}
-          muted
-          mirrored
-          highlightSpeaking
-          label={`${name} (You) · ${ROLE_LABEL[role]}`}
-          badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
-        />
-
-        {localScreenStream && (
-          <VideoTile
-            stream={localScreenStream}
-            muted
-            label={`${name} (Your screen)`}
-            badge={screenRecStatus === "recording" ? "REC" : undefined}
+      {prompterOpen ? (
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <Teleprompter
+            sessionId={sessionId}
+            uid={uid}
+            recordingActive={isRecordingActive && !inCountdown}
+            onClose={() => setPrompterOpen(false)}
+            mode="embedded"
           />
-        )}
-
-        {peers.map((peer) => (
-          <VideoTile
-            key={peer.uid}
-            stream={peer.stream}
-            muted={false}
-            highlightSpeaking
-            label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
-            badge={peerBadge(peer)}
-            actions={
-              canModerate || canRename ? (
-                <>
-                  {canRename && (
-                    <button
-                      onClick={() => renameParticipant(peer.uid, peer.displayName)}
-                      title="Rename this participant"
-                      className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
-                    >
-                      Rename
-                    </button>
-                  )}
-                  {canModerate && (
-                    <>
-                      <button
-                        onClick={() => requestMute(peer.uid)}
-                        title="Mute their microphone"
-                        className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
-                      >
-                        Mute
-                      </button>
-                      <button
-                        onClick={() => removeParticipant(peer.uid, peer.displayName)}
-                        title="Remove from studio"
-                        className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-red-300 backdrop-blur transition hover:bg-black/80"
-                      >
-                        Remove
-                      </button>
-                    </>
-                  )}
-                </>
-              ) : undefined
-            }
-          />
-        ))}
-
-        {screenPeers.map((sp) => (
-          <VideoTile
-            key={`screen-${sp.uid}`}
-            stream={sp.stream}
-            muted
-            label={`${sp.displayName} · Screen`}
-            badge={CONNECTION_LABEL[sp.connectionState] ?? sp.connectionState}
-          />
-        ))}
-
-        {peers.length === 0 && <VideoTile stream={null} muted label="Waiting for others to join…" />}
-      </div>
+          <div className="grid max-h-[calc(100vh-14rem)] grid-cols-2 gap-3 overflow-y-auto lg:grid-cols-1">
+            {callTiles}
+          </div>
+        </div>
+      ) : (
+        <div className={`grid flex-1 grid-cols-1 gap-4 ${gridColsClass}`}>{callTiles}</div>
+      )}
 
       <footer className="flex flex-col items-center gap-3">
         {role === "host" && !isRecordingActive && notReadyPeers.length > 0 && (
@@ -1435,18 +1669,28 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           </p>
         )}
         <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
-          <ControlButton onClick={toggleMic} active={micOn} title={micOn ? "Mute microphone" : "Unmute microphone"}>
+          <ControlButton
+            onClick={toggleMic}
+            active={micOn}
+            title={micOn ? "Mute microphone" : "Unmute microphone"}
+            label={micOn ? "Mic on" : "Muted"}
+          >
             {micOn ? (
               <Mic aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             ) : (
               <MicOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             )}
           </ControlButton>
-          <ControlButton onClick={toggleCam} active={camOn} title={camOn ? "Turn camera off" : "Turn camera on"}>
+          <ControlButton
+            onClick={toggleCam}
+            active={camOn}
+            title={camOn ? "Turn camera off" : "Turn camera on"}
+            label={camOn ? "Camera" : "Camera off"}
+          >
             {camOn ? (
-              <Camera aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+              <Video aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             ) : (
-              <CameraOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+              <VideoOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             )}
           </ControlButton>
 
@@ -1454,6 +1698,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             onClick={toggleScreenShare}
             active={!!localScreenStream}
             title={localScreenStream ? "Stop sharing screen" : "Share screen"}
+            label={localScreenStream ? "Sharing" : "Share"}
           >
             <Monitor aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
           </ControlButton>
@@ -1462,6 +1707,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             onClick={() => setPrompterOpen((o) => !o)}
             active={prompterOpen}
             title={prompterOpen ? "Close script" : "Open script / teleprompter"}
+            label="Prompter"
           >
             <ScrollText aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
           </ControlButton>
@@ -1471,6 +1717,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
               onClick={() => setChatOpen((o) => !o)}
               active={chatOpen}
               title={chatOpen ? "Close chat" : "Open chat"}
+              label="Chat"
             >
               <MessageCircle aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             </ControlButton>
@@ -1480,6 +1727,18 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
               </span>
             )}
           </div>
+
+          <ControlButton
+            onClick={() => {
+              setDevicesOpen((o) => !o);
+              void refreshDevices();
+            }}
+            active={devicesOpen}
+            title={devicesOpen ? "Close devices" : "Change camera, microphone, or speaker"}
+            label="Devices"
+          >
+            <Settings aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+          </ControlButton>
 
           {role === "host" && (
             <button
@@ -1499,16 +1758,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             disabled={recordingStatus === "finishing"}
             className="flex h-11 items-center rounded-full border border-neutral-700 px-5 text-sm font-semibold text-neutral-200 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {recordingStatus === "finishing" ? "Finishing upload…" : "Leave"}
+            Leave
           </button>
-          {canWaitForUpload && (
-            <button
-              onClick={waitForUpload}
-              className="flex h-11 items-center rounded-full border border-neutral-700 px-5 text-sm font-semibold text-neutral-200 transition hover:border-neutral-500 hover:text-white"
-            >
-              Wait while uploading
-            </button>
-          )}
         </div>
 
         {isRecordingParticipant && recordingStatus === "recording" && progress.totalBytes > 0 && (

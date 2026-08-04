@@ -12,9 +12,38 @@ type Props = {
   onClose: () => void;
 };
 
-function toDatetimeLocal(date: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function toDateInput(date: Date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function toTimeInput(date: Date) {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromDateAndTime(date: string, time: string) {
+  return new Date(`${date}T${time}`);
+}
+
+function timeLabel(time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  return new Date(2000, 0, 1, hours, minutes).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildTimeOptions() {
+  const options: string[] = [];
+  for (let minutes = 6 * 60; minutes <= 22 * 60; minutes += 15) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    options.push(`${pad(hours)}:${pad(mins)}`);
+  }
+  return options;
 }
 
 function defaultStart(initialDate?: Date | null) {
@@ -31,10 +60,15 @@ function formatDuration(minutes: number) {
   return rest ? `${hours} hr ${rest} min` : `${hours} hr`;
 }
 
+const TIME_OPTIONS = buildTimeOptions();
+const QUICK_TIMES = ["09:00", "10:00", "11:00", "13:00", "14:00", "15:00"];
+
 export default function PlanRecordingModal({ user, initialDate, onClose }: Props) {
   const router = useRouter();
+  const initialStart = useMemo(() => defaultStart(initialDate), [initialDate]);
   const [title, setTitle] = useState("Untitled");
-  const [scheduledAt, setScheduledAt] = useState(() => toDatetimeLocal(defaultStart(initialDate)));
+  const [scheduledDate, setScheduledDate] = useState(() => toDateInput(initialStart));
+  const [scheduledTime, setScheduledTime] = useState(() => toTimeInput(initialStart));
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [creating, setCreating] = useState(false);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -51,7 +85,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
   }, [createdId, origin]);
 
   const create = async () => {
-    const when = new Date(scheduledAt);
+    const when = fromDateAndTime(scheduledDate, scheduledTime);
     if (Number.isNaN(when.getTime())) {
       window.alert("Choose a valid date and time.");
       return;
@@ -85,8 +119,8 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 text-neutral-100 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-neutral-800 bg-neutral-950 text-neutral-100 shadow-2xl">
         <div className="flex items-center gap-3 border-b border-neutral-800 px-5 py-4">
           <span className="flex h-9 w-9 items-center justify-center rounded-full bg-neutral-900 text-neutral-200">
             <CalendarClock aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
@@ -105,8 +139,8 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
           </button>
         </div>
 
-        <div className="grid gap-5 p-5 md:grid-cols-[1fr_0.9fr]">
-          <div className="flex flex-col gap-4">
+        <div className="grid min-w-0 gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.85fr)]">
+          <div className="flex min-w-0 flex-col gap-4">
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-neutral-500">Project title</span>
               <input
@@ -117,16 +151,32 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
               />
             </label>
 
-            <div className="grid gap-3 sm:grid-cols-[1fr_9rem]">
+            <div className="grid gap-3 sm:grid-cols-[1fr_11rem_9rem]">
               <label className="flex flex-col gap-1.5">
-                <span className="text-xs font-medium text-neutral-500">Date and time</span>
+                <span className="text-xs font-medium text-neutral-500">Date</span>
                 <input
-                  type="datetime-local"
-                  value={scheduledAt}
-                  onChange={(e) => setScheduledAt(e.target.value)}
+                  type="date"
+                  value={scheduledDate}
+                  onChange={(e) => setScheduledDate(e.target.value)}
                   disabled={!!createdId}
                   className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
                 />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-neutral-500">Start time</span>
+                <select
+                  value={scheduledTime}
+                  onChange={(e) => setScheduledTime(e.target.value)}
+                  disabled={!!createdId}
+                  className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <option key={time} value={time}>
+                      {timeLabel(time)}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="flex flex-col gap-1.5">
@@ -146,6 +196,25 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
               </label>
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-neutral-500">Quick start</span>
+              {QUICK_TIMES.map((time) => (
+                <button
+                  key={time}
+                  type="button"
+                  onClick={() => setScheduledTime(time)}
+                  disabled={!!createdId}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    scheduledTime === time
+                      ? "border-indigo-400 bg-indigo-500/15 text-indigo-200"
+                      : "border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+                  }`}
+                >
+                  {timeLabel(time)}
+                </button>
+              ))}
+            </div>
+
             {createdId ? (
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
                 Recording planned. The links are ready to send.
@@ -163,7 +232,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
             )}
           </div>
 
-          <div className="flex flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
+          <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
             <div className="flex items-center gap-2">
               <Link2 aria-hidden="true" className="h-4 w-4 text-neutral-400" strokeWidth={1.8} />
               <h3 className="text-sm font-semibold text-neutral-200">Invite links</h3>
@@ -177,15 +246,17 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                       key={link.key}
                       type="button"
                       onClick={() => copy(link.key, link.url)}
-                      className="flex min-w-0 items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-neutral-600 hover:text-white"
+                      className="flex w-full min-w-0 items-start gap-3 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-neutral-600 hover:text-white"
                     >
                       {copied === link.key ? (
-                        <Check aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                        <Check aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
                       ) : (
-                        <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+                        <Copy aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-neutral-500" />
                       )}
-                      <span className="w-14 shrink-0 font-semibold">{link.label}</span>
-                      <span className="truncate text-neutral-500">{link.url}</span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="font-semibold text-neutral-200">{link.label}</span>
+                        <span className="break-all leading-relaxed text-neutral-500">{link.url}</span>
+                      </span>
                     </button>
                   ))}
                 </div>
