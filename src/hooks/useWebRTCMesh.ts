@@ -10,6 +10,7 @@ import {
   onSnapshot,
   serverTimestamp,
   setDoc,
+  type Timestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getRtcConfig, warmIceServers } from "@/lib/rtcConfig";
@@ -46,6 +47,8 @@ type ParticipantData = {
   // never collides with stale offer/answer docs from the previous share.
   screenShareId?: string | null;
   muted?: boolean;
+  // Rewritten by every join() — acts as the peer's session epoch.
+  joinedAt?: Timestamp;
 };
 
 type RtcDiagnostic = {
@@ -148,7 +151,9 @@ export function useWebRTCMesh(
   // Reconnect machinery: last-known role/name per peer (to rebuild a
   // connection without waiting for another participants snapshot), retry
   // budgets, and pending watchdog/reconnect timers.
-  const participantsMetaRef = useRef<Record<string, { role: ParticipantRole; displayName: string; muted?: boolean }>>({});
+  const participantsMetaRef = useRef<
+    Record<string, { role: ParticipantRole; displayName: string; muted?: boolean; joinedAtMs?: number }>
+  >({});
   const retryCountsRef = useRef<Record<string, number>>({});
   const watchdogsRef = useRef<Record<string, number>>({});
   const reconnectTimersRef = useRef<Record<string, number>>({});
@@ -687,9 +692,23 @@ export function useWebRTCMesh(
           const uid = change.doc.id;
           if (uid === localUid) return;
           const data = change.doc.data() as ParticipantData;
+          // joinedAt is rewritten on every join(), so it works as a session
+          // epoch: if it moved while we still hold a connection, that
+          // connection belongs to the peer's PREVIOUS visit. This is the only
+          // reliable signal when a fast leave+rejoin coalesces into a single
+          // snapshot change (active:false never observed) — without it, our
+          // zombie connection sits "connecting"/"disconnected" forever while
+          // the rejoined peer waits for signaling that never comes.
+          const joinedAtMs = data.joinedAt?.toMillis?.() ?? 0;
+          const prevJoinedAtMs = participantsMetaRef.current[uid]?.joinedAtMs;
           // Kept fresh for the reconnect path, which rebuilds a connection
           // without waiting for another participants snapshot.
-          participantsMetaRef.current[uid] = { role: data.role, displayName: data.displayName, muted: !!data.muted };
+          participantsMetaRef.current[uid] = {
+            role: data.role,
+            displayName: data.displayName,
+            muted: !!data.muted,
+            joinedAtMs,
+          };
 
           // Guests/producers must be admitted by the host before the mesh
           // will talk to them (the host's own doc carries no admission field).
@@ -702,7 +721,14 @@ export function useWebRTCMesh(
             // exists (keyed on uid / shareId) — so a metadata-only change
             // like a host/producer rename needs its own path, or the peer's
             // tile would keep showing the old name until they reconnect.
-            if (peerConnectionsRef.current[uid]) {
+            if (
+              peerConnectionsRef.current[uid] &&
+              prevJoinedAtMs !== undefined &&
+              joinedAtMs > 0 &&
+              joinedAtMs !== prevJoinedAtMs
+            ) {
+              reconnectRef.current(uid, false);
+            } else if (peerConnectionsRef.current[uid]) {
               setPeers((prev) =>
                 prev[uid]
                   ? {

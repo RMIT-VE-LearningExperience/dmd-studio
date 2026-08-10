@@ -97,11 +97,14 @@ service cloud.firestore {
       match /scripts/{uid} {
         // Per-participant teleprompter script. The owner manages their own;
         // the host may also write one for a guest (and preps the shared
-        // session script under the id "shared").
+        // session script under the id "shared"). An admitted producer may
+        // run the shared prompter live — edit its text and drive its
+        // play/pause controls — but can't touch personal scripts.
         allow read: if request.auth != null
           && (request.auth.uid == uid || isSessionHost() || isAdmitted());
         allow write: if request.auth != null
-          && (request.auth.uid == uid || isSessionHost());
+          && (request.auth.uid == uid || isSessionHost()
+              || (uid == 'shared' && isAdmittedProducer()));
       }
 
       match /chat/{msgId} {

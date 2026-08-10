@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
-import { Mic, MicOff } from "lucide-react";
+import { Camera, CameraOff, Mic, MicOff, Sparkles } from "lucide-react";
 import { db } from "@/lib/firebase";
 import {
   getBestUserMedia,
@@ -13,7 +13,13 @@ import {
   type MediaDeviceChoice,
 } from "@/lib/media";
 import { warmIceServers } from "@/lib/rtcConfig";
+import { createBlurredStream, type BlurPipeline } from "@/lib/backgroundBlur";
 import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
+
+export type JoinOptions = {
+  startMuted: boolean;
+  startCamOff: boolean;
+};
 
 const ROLE_LABEL: Record<ParticipantRole, string> = {
   host: "Host",
@@ -89,7 +95,7 @@ type Props = {
   sessionId: string;
   role: ParticipantRole;
   initialName: string;
-  onJoin: (stream: MediaStream, displayName: string, startMuted: boolean) => void | Promise<void>;
+  onJoin: (stream: MediaStream, displayName: string, options: JoinOptions) => void | Promise<void>;
 };
 
 export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
@@ -115,6 +121,16 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   const [joining, setJoining] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
   const micMutedRef = useRef(false);
+  const [camOff, setCamOff] = useState(false);
+  const camOffRef = useRef(false);
+  const [blurOn, setBlurOn] = useState(false);
+  const blurOnRef = useRef(false);
+  const [blurBusy, setBlurBusy] = useState(false);
+  const [blurNote, setBlurNote] = useState<string | null>(null);
+  // The untouched camera stream; streamRef points at what's displayed and
+  // joined with — the blur pipeline's output when blur is on, else this.
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const pipelineRef = useRef<BlurPipeline | null>(null);
 
   const applySpeaker = useCallback(async (deviceId?: string) => {
     const video = videoRef.current;
@@ -128,10 +144,15 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
   }, []);
 
   const acquire = useCallback(async (videoDeviceId?: string, audioDeviceId?: string, speakerDeviceId?: string) => {
+    // Tear down in order: processing first (its canvas track), then the
+    // previous camera itself.
+    pipelineRef.current?.disposeKeepSource();
+    pipelineRef.current = null;
+    rawStreamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current?.getTracks().forEach((t) => t.stop());
     try {
       const saved = readSavedDevices();
-      const next = await getBestUserMedia(
+      const raw = await getBestUserMedia(
         videoDeviceId ?? saved.cameraId,
         audioDeviceId ?? saved.micId,
         settingsRef.current,
@@ -139,21 +160,44 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
       setError(null);
       // A fresh getUserMedia stream always starts enabled — reapply any mute
       // the guest already chose (e.g. after switching microphones).
-      next.getAudioTracks().forEach((t) => {
+      raw.getAudioTracks().forEach((t) => {
         t.enabled = !micMutedRef.current;
+      });
+      rawStreamRef.current = raw;
+
+      // Re-apply blur across device switches; fall back to the raw camera
+      // if the pipeline can't start on this device.
+      let next = raw;
+      if (blurOnRef.current && !settingsRef.current.audioOnly) {
+        try {
+          const pipeline = await createBlurredStream(raw);
+          pipelineRef.current = pipeline;
+          next = pipeline.stream;
+        } catch {
+          blurOnRef.current = false;
+          setBlurOn(false);
+          setBlurNote("Background blur isn't available on this device.");
+        }
+      }
+      next.getVideoTracks().forEach((t) => {
+        t.enabled = !camOffRef.current;
       });
       streamRef.current = next;
       setStream(next);
       setResolution(
-        settingsRef.current.audioOnly ? "Audio only" : getVideoResolutionLabel(next),
+        settingsRef.current.audioOnly
+          ? "Audio only"
+          : getVideoResolutionLabel(next) + (blurOnRef.current ? " · blurred" : ""),
       );
 
       const devices = await listMediaDevices();
       setCameras(devices.cameras);
       setMicrophones(devices.microphones);
       setSpeakers(devices.speakers);
-      const nextCameraId = next.getVideoTracks()[0]?.getSettings().deviceId ?? "";
-      const nextMicId = next.getAudioTracks()[0]?.getSettings().deviceId ?? "";
+      // Device ids come from the raw camera — a blur pipeline's canvas track
+      // has none.
+      const nextCameraId = raw.getVideoTracks()[0]?.getSettings().deviceId ?? "";
+      const nextMicId = raw.getAudioTracks()[0]?.getSettings().deviceId ?? "";
       const nextSpeakerId = speakerDeviceId ?? saved.speakerId ?? devices.speakers[0]?.deviceId ?? "";
       setCameraId(nextCameraId);
       setMicId(nextMicId);
@@ -173,6 +217,54 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
     streamRef.current?.getAudioTracks().forEach((t) => {
       t.enabled = !next;
     });
+  };
+
+  const toggleCam = () => {
+    const next = !camOff;
+    setCamOff(next);
+    camOffRef.current = next;
+    streamRef.current?.getVideoTracks().forEach((t) => {
+      t.enabled = !next;
+    });
+  };
+
+  const toggleBlur = async () => {
+    setBlurNote(null);
+    if (blurOn) {
+      setBlurOn(false);
+      blurOnRef.current = false;
+      pipelineRef.current?.disposeKeepSource();
+      pipelineRef.current = null;
+      const raw = rawStreamRef.current;
+      if (raw) {
+        raw.getVideoTracks().forEach((t) => {
+          t.enabled = !camOffRef.current;
+        });
+        streamRef.current = raw;
+        setStream(raw);
+        setResolution(getVideoResolutionLabel(raw));
+      }
+      return;
+    }
+    const raw = rawStreamRef.current;
+    if (!raw || blurBusy) return;
+    setBlurBusy(true);
+    try {
+      const pipeline = await createBlurredStream(raw);
+      pipelineRef.current = pipeline;
+      pipeline.stream.getVideoTracks().forEach((t) => {
+        t.enabled = !camOffRef.current;
+      });
+      streamRef.current = pipeline.stream;
+      setStream(pipeline.stream);
+      setResolution(`${getVideoResolutionLabel(pipeline.stream)} · blurred`);
+      setBlurOn(true);
+      blurOnRef.current = true;
+    } catch {
+      setBlurNote("Background blur isn't available on this device or browser.");
+    } finally {
+      setBlurBusy(false);
+    }
   };
 
   const joinedRef = useRef(false);
@@ -209,6 +301,8 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
       // On join, ownership of the stream transfers to the room — only stop
       // the camera if the user left the lobby without joining.
       if (!joinedRef.current) {
+        pipelineRef.current?.disposeKeepSource();
+        rawStreamRef.current?.getTracks().forEach((t) => t.stop());
         streamRef.current?.getTracks().forEach((t) => t.stop());
       }
     };
@@ -225,7 +319,7 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
     joinedRef.current = true;
     try {
       await warmIceServers();
-      await onJoin(stream, name.trim(), micMuted);
+      await onJoin(stream, name.trim(), { startMuted: micMuted, startCamOff: camOff });
     } catch (err) {
       joinedRef.current = false;
       setJoining(false);
@@ -250,26 +344,73 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
               <span className="block text-neutral-400">This is how you&rsquo;ll be recorded</span>
             </span>
           )}
-          {stream && (
-            <button
-              onClick={toggleMic}
-              title={micMuted ? "Unmute microphone" : "Mute microphone before joining"}
-              className={`absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur transition ${
-                micMuted
-                  ? "border-red-500/60 bg-red-500/20 text-red-400"
-                  : "border-white/20 bg-black/60 text-white hover:border-white/40"
-              }`}
-            >
-              {micMuted ? (
-                <MicOff aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
-              ) : (
-                <Mic aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
-              )}
-            </button>
+          {stream && camOff && !settings?.audioOnly && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-950/90">
+              <CameraOff aria-hidden="true" className="h-10 w-10 text-neutral-500" strokeWidth={1.6} />
+              <span className="text-sm text-neutral-400">Your camera is hidden</span>
+            </div>
           )}
-          {micMuted && (
+          {stream && (
+            <div className="absolute bottom-3 right-3 flex items-center gap-2">
+              {!settings?.audioOnly && (
+                <button
+                  onClick={toggleBlur}
+                  disabled={blurBusy}
+                  title={
+                    blurOn
+                      ? "Turn background blur off"
+                      : "Blur your background (records at up to 720p)"
+                  }
+                  className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur transition disabled:opacity-60 ${
+                    blurOn
+                      ? "border-indigo-400/70 bg-indigo-500/25 text-indigo-300"
+                      : "border-white/20 bg-black/60 text-white hover:border-white/40"
+                  }`}
+                >
+                  <Sparkles
+                    aria-hidden="true"
+                    className={`h-4 w-4 ${blurBusy ? "animate-pulse" : ""}`}
+                    strokeWidth={1.8}
+                  />
+                </button>
+              )}
+              {!settings?.audioOnly && (
+                <button
+                  onClick={toggleCam}
+                  title={camOff ? "Show your camera" : "Hide your camera before joining"}
+                  className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur transition ${
+                    camOff
+                      ? "border-red-500/60 bg-red-500/20 text-red-400"
+                      : "border-white/20 bg-black/60 text-white hover:border-white/40"
+                  }`}
+                >
+                  {camOff ? (
+                    <CameraOff aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                  ) : (
+                    <Camera aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                  )}
+                </button>
+              )}
+              <button
+                onClick={toggleMic}
+                title={micMuted ? "Unmute microphone" : "Mute microphone before joining"}
+                className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur transition ${
+                  micMuted
+                    ? "border-red-500/60 bg-red-500/20 text-red-400"
+                    : "border-white/20 bg-black/60 text-white hover:border-white/40"
+                }`}
+              >
+                {micMuted ? (
+                  <MicOff aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                ) : (
+                  <Mic aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                )}
+              </button>
+            </div>
+          )}
+          {(micMuted || camOff) && (
             <span className="absolute bottom-3 left-3 rounded-md bg-red-600/90 px-2 py-1 text-xs font-semibold text-white">
-              Joining muted
+              {micMuted && camOff ? "Joining muted, camera hidden" : micMuted ? "Joining muted" : "Joining with camera hidden"}
             </span>
           )}
           {!stream && !error && (
@@ -387,6 +528,13 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
               )}
             </select>
           </label>
+
+          {blurNote && <p className="text-xs text-amber-400">{blurNote}</p>}
+          {blurOn && (
+            <p className="text-xs text-neutral-500">
+              Background blur is on — your video records at up to 720p while blurred.
+            </p>
+          )}
 
           <button
             onClick={handleJoin}

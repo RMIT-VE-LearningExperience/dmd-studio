@@ -1,8 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+
+type PrompterRole = "host" | "guest" | "producer";
+
+type SharedControl = {
+  playing?: boolean;
+  speed?: number;
+  nonce?: number;
+};
 
 type Props = {
   sessionId: string;
@@ -12,12 +20,23 @@ type Props = {
   recordingActive?: boolean;
   onClose: () => void;
   mode?: "floating" | "embedded";
+  role?: PrompterRole;
 };
 
 // Per-participant script overlay: paste or load a .txt, then auto-scroll it
-// while recording. The script persists on the session (scripts/{uid}) so a
-// refresh — or prepping days before the call — doesn't lose it.
-export default function Teleprompter({ sessionId, uid, recordingActive, onClose, mode = "floating" }: Props) {
+// while recording. Personal scripts persist at scripts/{uid}; the shared
+// script (scripts/shared) is followed LIVE by everyone without a personal
+// one, and its `control` field lets the producer/host run the prompter
+// remotely — play, pause, speed, restart — for the whole room. Producers
+// always work on the shared script (they aren't in the recording).
+export default function Teleprompter({
+  sessionId,
+  uid,
+  recordingActive,
+  onClose,
+  mode = "floating",
+  role = "guest",
+}: Props) {
   const [text, setText] = useState<string | null>(null); // null while loading
   const [fromShared, setFromShared] = useState(false);
   const [draft, setDraft] = useState("");
@@ -61,33 +80,102 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
     [getMaxOffset],
   );
 
+  // Mirrors for values snapshot callbacks need without re-subscribing.
+  const editingRef = useRef(editing);
+  useEffect(() => {
+    editingRef.current = editing;
+  }, [editing]);
+  const initializedRef = useRef(false);
+  const lastNonceRef = useRef<number | null>(null);
+  // Ref, not closure state: the shared-doc snapshot below must see a personal
+  // script saved AFTER subscribing, or a later shared edit would clobber it.
+  const hasPersonalRef = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
+    let unsubShared: (() => void) | undefined;
     (async () => {
       let personal = "";
-      let shared = "";
-      try {
-        const snap = await getDoc(doc(db, "sessions", sessionId, "scripts", uid));
-        personal = (snap.data()?.text as string) ?? "";
-        if (!personal) {
-          // Fall back to the script the host prepared for the session.
-          const sharedSnap = await getDoc(doc(db, "sessions", sessionId, "scripts", "shared"));
-          shared = (sharedSnap.data()?.text as string) ?? "";
+      if (role !== "producer") {
+        try {
+          const snap = await getDoc(doc(db, "sessions", sessionId, "scripts", uid));
+          personal = (snap.data()?.text as string) ?? "";
+        } catch {
+          // Not readable — treat as absent.
         }
-      } catch {
-        // Neither readable — start with an empty editor.
       }
       if (cancelled) return;
-      const effective = personal || shared;
-      setFromShared(!personal && !!shared);
-      setText(effective);
-      setDraft(effective);
-      setEditing(!effective);
+      hasPersonalRef.current = !!personal;
+      if (personal) {
+        initializedRef.current = true;
+        setFromShared(false);
+        setText(personal);
+        setDraft(personal);
+        setEditing(false);
+      }
+
+      // Follow the shared script live: it's the fallback text for anyone
+      // without a personal script, the producer's working copy, and the
+      // channel the producer/host drives everyone's prompter through.
+      unsubShared = onSnapshot(doc(db, "sessions", sessionId, "scripts", "shared"), (snap) => {
+        const data = snap.data();
+        const sharedText = (data?.text as string) ?? "";
+        const usesShared = role === "producer" || !hasPersonalRef.current;
+
+        if (usesShared) {
+          setFromShared(role !== "producer" && !!sharedText);
+          setText(sharedText);
+          if (!initializedRef.current) {
+            initializedRef.current = true;
+            setDraft(sharedText);
+            setEditing(!sharedText);
+          } else if (!editingRef.current) {
+            setDraft(sharedText);
+          }
+        } else if (!initializedRef.current) {
+          initializedRef.current = true;
+        }
+
+        // Remote control: guests reading the shared script follow the
+        // producer/host's play state. Directors drive; they don't follow.
+        const control = data?.control as SharedControl | undefined;
+        if (usesShared && role === "guest" && control) {
+          if (typeof control.speed === "number") {
+            setSpeed(Math.min(10, Math.max(1, Math.round(control.speed))));
+          }
+          const nonce = control.nonce ?? 0;
+          if (lastNonceRef.current === null) {
+            lastNonceRef.current = nonce;
+          } else if (nonce !== lastNonceRef.current) {
+            lastNonceRef.current = nonce;
+            applyOffset(0);
+          }
+          if (typeof control.playing === "boolean" && !editingRef.current) {
+            setPlaying(control.playing && !!sharedText);
+          }
+        }
+      });
     })();
     return () => {
       cancelled = true;
+      unsubShared?.();
     };
-  }, [sessionId, uid]);
+  }, [sessionId, uid, role, applyOffset]);
+
+  // Producers always direct; the host directs when reading the shared
+  // script. Their play/pause/speed/restart also drive everyone following it.
+  const directsShared = role === "producer" || (role === "host" && fromShared);
+  const publishControl = useCallback(
+    (patch: SharedControl) => {
+      if (!directsShared) return;
+      void setDoc(
+        doc(db, "sessions", sessionId, "scripts", "shared"),
+        { control: patch },
+        { merge: true },
+      ).catch(() => {});
+    },
+    [directsShared, sessionId],
+  );
 
   // Recording started/stopped since last render — start or stop scrolling
   // (adjusting state during render per React's derived-state pattern).
@@ -181,12 +269,20 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
   const save = async () => {
     setSaving(true);
     try {
-      await setDoc(doc(db, "sessions", sessionId, "scripts", uid), {
-        text: draft,
-        updatedAt: serverTimestamp(),
-      });
+      // Producers edit the shared script itself — everyone following it sees
+      // the change live. Everyone else saves a personal copy.
+      const target = role === "producer" ? "shared" : uid;
+      await setDoc(
+        doc(db, "sessions", sessionId, "scripts", target),
+        {
+          text: draft,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
       setText(draft);
       setFromShared(false);
+      if (role !== "producer") hasPersonalRef.current = true;
       setEditing(false);
       applyOffset(0);
     } catch {
@@ -208,6 +304,7 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
   const restart = () => {
     setPlaying(false);
     applyOffset(0);
+    publishControl({ playing: false, nonce: Date.now() });
   };
 
   return (
@@ -215,7 +312,10 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
       ref={panelRef}
       className={
         mode === "embedded"
-          ? "flex h-full min-h-[28rem] flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
+          ? // Height must be bounded by the viewport, not the parent (which
+            // grows with content) — an unbounded panel fits the whole script,
+            // leaving nothing to clip and therefore nothing to scroll.
+            "flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
           : `fixed z-50 flex max-h-[55vh] w-[min(calc(100vw-2rem),42rem)] flex-col overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-950/95 shadow-2xl backdrop-blur ${
               position ? "" : "left-1/2 top-14 -translate-x-1/2"
             }`
@@ -231,17 +331,24 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
           title={mode === "floating" ? "Drag to move script" : undefined}
         >
           Teleprompter
-          {fromShared && !editing && (
-            <span className="ml-1.5 font-normal text-neutral-500">· provided by the host</span>
+          {role === "producer" && (
+            <span className="ml-1.5 font-normal text-indigo-400">· shared — edits go live to everyone</span>
+          )}
+          {fromShared && !editing && role !== "producer" && (
+            <span className="ml-1.5 font-normal text-neutral-500">· shared script (live)</span>
           )}
         </div>
         {!editing && text && (
           <>
             <button
-              onClick={() => setPlaying((p) => !p)}
+              onClick={() => {
+                const next = !playing;
+                setPlaying(next);
+                publishControl({ playing: next });
+              }}
               className="rounded-full bg-indigo-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-indigo-500"
             >
-              {playing ? "Pause" : "Scroll"}
+              {playing ? "Pause" : directsShared ? "Scroll for everyone" : "Scroll"}
             </button>
             <span className="text-[11px] text-neutral-600" title="Nudge the script up or down, playing or paused">
               ↑↓ to nudge
@@ -261,7 +368,11 @@ export default function Teleprompter({ sessionId, uid, recordingActive, onClose,
                 max={10}
                 step={1}
                 value={speed}
-                onChange={(e) => setSpeed(Number(e.target.value))}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  setSpeed(next);
+                  publishControl({ speed: next });
+                }}
                 className="w-24 accent-indigo-500"
                 aria-label="Scroll speed"
               />

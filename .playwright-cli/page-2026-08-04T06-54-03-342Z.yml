@@ -1,0 +1,8 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e2]
+  - main [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - heading "DMD Studio" [level=1] [ref=e6]
+        - paragraph [ref=e7]: Record interview-style conversations with guests, locally in-browser, for later playback and download.
+      - button "Sign in with Google" [ref=e8]

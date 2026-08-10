@@ -37,7 +37,7 @@ import {
   type MediaDeviceChoice,
 } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
-import Lobby from "@/components/Lobby";
+import Lobby, { type JoinOptions } from "@/components/Lobby";
 import Teleprompter from "@/components/Teleprompter";
 
 // How long the on-screen countdown runs between the host pressing Record
@@ -436,7 +436,7 @@ function UploadStatusPanel({ rows }: { rows: UploadRow[] }) {
   if (rows.length === 0) return null;
 
   return (
-    <div className="fixed bottom-32 right-4 z-40 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur sm:bottom-4">
+    <div className="pointer-events-none fixed bottom-32 right-4 z-40 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 shadow-lg backdrop-blur sm:bottom-28">
       <p className="text-xs font-semibold text-neutral-400">Track uploads</p>
       {rows.map((row) => (
         <div key={row.key} className="flex items-center justify-between gap-2 text-xs">
@@ -987,7 +987,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     return () => window.removeEventListener("beforeunload", warn);
   }, [recordingStatus, screenRecStatus]);
 
-  const handleJoin = async (stream: MediaStream, chosenName: string, startMuted: boolean) => {
+  const handleJoin = async (stream: MediaStream, chosenName: string, options: JoinOptions) => {
+    const startMuted = options.startMuted;
     localStreamRef.current = stream;
     setLocalStream(stream);
     setResolutionLabel(getVideoResolutionLabel(stream));
@@ -1000,10 +1001,11 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     setSpeakerId(savedDevices.speakerId ?? "");
     saveDevices({ cameraId: resolvedCameraId, micId: resolvedMicId, speakerId: savedDevices.speakerId });
     void refreshDevices();
-    // The lobby already applied `enabled = false` to the audio tracks when
-    // the guest chose to join muted — mirror that into the room's own toggle
-    // state so the mic button/badge reflect it correctly from the first frame.
+    // The lobby already applied `enabled = false` to the chosen tracks —
+    // mirror that into the room's own toggle state so the buttons/badges
+    // reflect it correctly from the first frame.
     setMicOn(!startMuted);
+    setCamOn(!options.startCamOff);
     if (role === "host") {
       await join(stream, chosenName);
       await setDoc(
@@ -1102,6 +1104,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }).catch(() => {});
   };
 
+  // Unmuting stays the participant's own act (nobody's mic can be force-
+  // opened remotely) — the host can only nudge them to do it.
+  const requestUnmute = (peerUid: string) => {
+    void updateDoc(doc(db, "sessions", sessionId, "participants", peerUid), {
+      unmuteRequested: serverTimestamp(),
+    }).catch(() => {});
+    pushToast("Asked them to unmute — they'll get a prompt.");
+  };
+
   const removeParticipant = (peerUid: string, peerName: string) => {
     const sure = window.confirm(
       `Remove ${peerName} from the studio? They'll need to be admitted again to rejoin.`,
@@ -1144,6 +1155,10 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         pushToast("The host muted your microphone — you can unmute yourself anytime.");
         void setDoc(snap.ref, { muteRequested: null, muted: true }, { merge: true }).catch(() => {});
       }
+      if (data.unmuteRequested) {
+        pushToast("The host asked you to unmute — tap the mic button when you're ready.");
+        void setDoc(snap.ref, { unmuteRequested: null }, { merge: true }).catch(() => {});
+      }
       // Removal forces the same teardown as Leave, minus the confirm.
       if (data.admission === "denied" && !removedHandled) {
         removedHandled = true;
@@ -1158,6 +1173,23 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     });
     return unsub;
   }, [joined, role, sessionId, uid, stopAndUpload, stopScreenRec, leave, pushToast]);
+
+  // When the producer/host starts the shared prompter, open it for everyone
+  // who'd be reading it (rising edge only — closing it again stays closed
+  // until the next start).
+  const prevSharedPlayingRef = useRef(false);
+  useEffect(() => {
+    if (!joined || role === "producer") return;
+    const unsub = onSnapshot(doc(db, "sessions", sessionId, "scripts", "shared"), (snap) => {
+      const playing = !!(snap.data()?.control as { playing?: boolean } | undefined)?.playing;
+      if (playing && !prevSharedPlayingRef.current) {
+        setPrompterOpen(true);
+        pushToast("The teleprompter was started for everyone");
+      }
+      prevSharedPlayingRef.current = playing;
+    });
+    return unsub;
+  }, [joined, role, sessionId, pushToast]);
 
   // Everyone the mesh knows about but hasn't finished connecting to —
   // recording now would likely produce a session missing their track.
@@ -1396,11 +1428,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
                 {canModerate && (
                   <>
                     <button
-                      onClick={() => requestMute(peer.uid)}
-                      title="Mute their microphone"
+                      onClick={() => (peer.muted ? requestUnmute(peer.uid) : requestMute(peer.uid))}
+                      title={
+                        peer.muted
+                          ? "Ask them to unmute (mics can't be force-opened remotely)"
+                          : "Mute their microphone"
+                      }
                       className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-neutral-200 backdrop-blur transition hover:bg-black/80"
                     >
-                      Mute
+                      {peer.muted ? "Ask to unmute" : "Mute"}
                     </button>
                     <button
                       onClick={() => removeParticipant(peer.uid, peer.displayName)}
@@ -1465,7 +1501,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       )}
       {devicesOpen && (
         <div className="fixed right-4 top-16 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
-          <p className="text-xs font-semibold text-neutral-300">Devices</p>
+          <p className="text-xs font-semibold text-neutral-300">Settings</p>
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-neutral-500">Camera</span>
             <select
@@ -1589,8 +1625,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           {role === "host" && (
-            <Link href="/projects" className="text-sm text-neutral-500 hover:text-neutral-300">
-              ← Projects
+            // New tab: navigating this tab away would tear down the live call.
+            <Link
+              href="/projects"
+              target="_blank"
+              rel="noopener"
+              className="text-sm text-neutral-500 hover:text-neutral-300"
+            >
+              Projects ↗
             </Link>
           )}
           <span className="text-sm font-medium text-neutral-400">
@@ -1616,7 +1658,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
                 : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
             }`}
           >
-            Devices
+            Settings
           </button>
           {role === "host" && (
             <button
@@ -1627,15 +1669,18 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
                   : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
               }`}
             >
-              Settings
+              Recording
             </button>
           )}
           {role === "host" && (
+            // New tab: navigating this tab away would tear down the live call.
             <Link
               href={`/session/${sessionId}/recordings`}
+              target="_blank"
+              rel="noopener"
               className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
             >
-              Recordings
+              Recordings ↗
             </Link>
           )}
           <span className="rounded-full bg-neutral-800 px-3 py-1 text-xs font-medium text-neutral-400">
@@ -1649,6 +1694,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           <Teleprompter
             sessionId={sessionId}
             uid={uid}
+            role={role}
             recordingActive={isRecordingActive && !inCountdown}
             onClose={() => setPrompterOpen(false)}
             mode="embedded"

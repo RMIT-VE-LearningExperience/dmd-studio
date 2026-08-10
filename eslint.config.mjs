@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Cloud Functions are CommonJS Node code, not part of the Next app.
     "functions/**",
+    // Static assets — includes MediaPipe's generated wasm loader JS.
+    "public/**",
   ]),
 ]);
 
