@@ -280,11 +280,15 @@ export default function Teleprompter({
         },
         { merge: true },
       );
+      const cleared = !draft.trim();
       setText(draft);
       setFromShared(false);
-      if (role !== "producer") hasPersonalRef.current = true;
-      setEditing(false);
+      // Clearing a personal script drops back to following the shared one;
+      // clearing the shared script also stops any run in progress.
+      if (role !== "producer") hasPersonalRef.current = !cleared;
+      setEditing(cleared);
       applyOffset(0);
+      if (cleared) publishControl({ playing: false });
     } catch {
       window.alert("Couldn't save the script — try again.");
     } finally {
@@ -443,10 +447,11 @@ export default function Teleprompter({
               )}
               <button
                 onClick={save}
-                disabled={saving || !draft.trim()}
+                disabled={saving}
+                title={draft.trim() ? "Save the script" : "Save with no text — clears the script"}
                 className="rounded-full bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
               >
-                {saving ? "Saving…" : "Save script"}
+                {saving ? "Saving…" : draft.trim() ? "Save script" : "Clear script"}
               </button>
             </div>
           </div>
