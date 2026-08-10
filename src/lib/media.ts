@@ -27,7 +27,9 @@ export async function getBestUserMedia(
     if (settings?.audioOnly) {
       return await navigator.mediaDevices.getUserMedia({ audio, video: false });
     }
-    const maxHeight = settings?.maxHeight ?? 2160;
+    // 1080p default: high quality without 4K's upload/storage weight — the
+    // host/producer can raise it to 4K (or drop to 720p) per session.
+    const maxHeight = settings?.maxHeight ?? 1080;
     return await navigator.mediaDevices.getUserMedia({
       video: {
         ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),

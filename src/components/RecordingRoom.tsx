@@ -205,6 +205,18 @@ function useIsSpeaking(stream: MediaStream | null, enabled: boolean) {
   return speaking && enabled;
 }
 
+// "Neda Kabiri" → "NK"; single names give one letter.
+function initialsOf(name: string) {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  );
+}
+
 function VideoTile({
   stream,
   muted,
@@ -214,6 +226,8 @@ function VideoTile({
   actions,
   highlightSpeaking,
   speakerId,
+  cameraOff,
+  personName,
 }: {
   stream: MediaStream | null;
   muted: boolean;
@@ -223,6 +237,10 @@ function VideoTile({
   actions?: React.ReactNode;
   highlightSpeaking?: boolean;
   speakerId?: string;
+  // Camera deliberately off (vs. still connecting) — shows an initials
+  // avatar instead of a plain black rectangle.
+  cameraOff?: boolean;
+  personName?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useIsSpeaking(stream, !!highlightSpeaking);
@@ -289,6 +307,13 @@ function VideoTile({
           <p className="mt-1 text-xs text-neutral-400">
             {failed ? "Ask them to refresh and rejoin." : "Rebuilding the studio connection."}
           </p>
+        </div>
+      )}
+      {cameraOff && stream && (
+        <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/95">
+          <span className="flex h-20 w-20 items-center justify-center rounded-full border border-neutral-700 bg-neutral-800 text-2xl font-semibold text-neutral-200">
+            {initialsOf(personName ?? label)}
+          </span>
         </div>
       )}
       {actions && <div className="absolute left-3 top-3 flex gap-1.5">{actions}</div>}
@@ -1010,7 +1035,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       await join(stream, chosenName);
       await setDoc(
         doc(db, "sessions", sessionId, "participants", uid),
-        { muted: startMuted },
+        { muted: startMuted, camOff: options.startCamOff },
         { merge: true },
       );
       setJoined(true);
@@ -1033,7 +1058,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     ]);
     if (existing.data()?.admission === "admitted") {
       await join(stream, chosenName);
-      await setDoc(participantRef, { muted: startMuted }, { merge: true });
+      await setDoc(participantRef, { muted: startMuted, camOff: options.startCamOff }, { merge: true });
       setJoined(true);
       return;
     }
@@ -1042,7 +1067,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       try {
         await setDoc(participantRef, { admission: "admitted" }, { merge: true });
         await join(stream, chosenName);
-        await setDoc(participantRef, { muted: startMuted }, { merge: true });
+        await setDoc(participantRef, { muted: startMuted, camOff: options.startCamOff }, { merge: true });
         setJoined(true);
         return;
       } catch {
@@ -1057,6 +1082,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         admission: "pending",
         active: false,
         muted: startMuted,
+        camOff: options.startCamOff,
         knockedAt: serverTimestamp(),
       },
       { merge: true },
@@ -1235,10 +1261,18 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   };
 
   const toggleCam = () => {
+    const next = !camOn;
     localStreamRef.current?.getVideoTracks().forEach((t) => {
-      t.enabled = !camOn;
+      t.enabled = next;
     });
-    setCamOn(!camOn);
+    setCamOn(next);
+    // Synced so other tiles can show an initials avatar instead of a
+    // mysterious black rectangle.
+    void setDoc(
+      doc(db, "sessions", sessionId, "participants", uid),
+      { camOff: !next },
+      { merge: true },
+    ).catch(() => {});
   };
 
   const leaveSession = async () => {
@@ -1390,6 +1424,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         mirrored
         highlightSpeaking
         speakerId={speakerId}
+        cameraOff={!camOn}
+        personName={name}
         label={`${name} (You) · ${ROLE_LABEL[role]}`}
         badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
       />
@@ -1411,6 +1447,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           muted={false}
           highlightSpeaking
           speakerId={speakerId}
+          cameraOff={peer.camOff && peer.connectionState === "connected"}
+          personName={peer.displayName}
           label={`${peer.displayName} · ${ROLE_LABEL[peer.role]}`}
           badge={[peer.muted ? "Muted" : null, peerBadge(peer)].filter(Boolean).join(" · ")}
           actions={
@@ -1559,13 +1597,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           </p>
         </div>
       )}
-      {settingsOpen && role === "host" && (
+      {settingsOpen && (role === "host" || role === "producer") && (
         <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
           <p className="text-xs font-semibold text-neutral-300">Recording settings</p>
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-neutral-500">Max video quality</span>
             <select
-              value={String(sessionSettings.maxHeight ?? 2160)}
+              value={String(sessionSettings.maxHeight ?? 1080)}
               onChange={(e) =>
                 void setDoc(
                   doc(db, "sessions", sessionId),
@@ -1660,7 +1698,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           >
             Settings
           </button>
-          {role === "host" && (
+          {(role === "host" || role === "producer") && (
             <button
               onClick={() => setSettingsOpen((o) => !o)}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition ${

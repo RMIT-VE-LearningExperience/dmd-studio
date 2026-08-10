@@ -44,8 +44,12 @@ service cloud.firestore {
       allow list: if request.auth != null && resource.data.hostUid == request.auth.uid;
       allow create: if request.auth != null && request.resource.data.hostUid == request.auth.uid;
       // Only the host mutates the session doc (recording flag, settings,
-      // title, schedule, status, archive).
+      // title, schedule, status, archive)…
       allow update: if request.auth != null && resource.data.hostUid == request.auth.uid;
+      // …except capture settings (quality, audio-only, auto-admit), which an
+      // admitted producer may also adjust — and nothing else on the doc.
+      allow update: if isAdmittedProducer()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['settings']);
       allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
 
       match /participants/{uid} {

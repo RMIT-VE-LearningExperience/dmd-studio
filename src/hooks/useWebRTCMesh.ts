@@ -28,6 +28,7 @@ export type RemotePeer = {
   retryAttempt?: number;
   retriesExhausted?: boolean;
   muted?: boolean;
+  camOff?: boolean;
 };
 
 export type RemoteScreen = {
@@ -47,6 +48,7 @@ type ParticipantData = {
   // never collides with stale offer/answer docs from the previous share.
   screenShareId?: string | null;
   muted?: boolean;
+  camOff?: boolean;
   // Rewritten by every join() — acts as the peer's session epoch.
   joinedAt?: Timestamp;
 };
@@ -152,7 +154,7 @@ export function useWebRTCMesh(
   // connection without waiting for another participants snapshot), retry
   // budgets, and pending watchdog/reconnect timers.
   const participantsMetaRef = useRef<
-    Record<string, { role: ParticipantRole; displayName: string; muted?: boolean; joinedAtMs?: number }>
+    Record<string, { role: ParticipantRole; displayName: string; muted?: boolean; camOff?: boolean; joinedAtMs?: number }>
   >({});
   const retryCountsRef = useRef<Record<string, number>>({});
   const watchdogsRef = useRef<Record<string, number>>({});
@@ -177,7 +179,7 @@ export function useWebRTCMesh(
   }, []);
 
   const connectToPeer = useCallback(
-    (remoteUid: string, remoteRole: ParticipantRole, remoteName: string, remoteMuted = false) => {
+    (remoteUid: string, remoteRole: ParticipantRole, remoteName: string, remoteMuted = false, remoteCamOff = false) => {
       if (peerConnectionsRef.current[remoteUid]) return;
       const stream = localStreamRef.current;
       if (!stream) return;
@@ -221,6 +223,7 @@ export function useWebRTCMesh(
           stream: remoteStream,
           connectionState: "connecting",
           muted: remoteMuted,
+          camOff: remoteCamOff,
           // Survives the placeholder → real-connection swap during a retry.
           retryAttempt: prev[remoteUid]?.retryAttempt,
         },
@@ -452,12 +455,13 @@ export function useWebRTCMesh(
           stream: null,
           connectionState: "connecting",
           muted: !!meta.muted,
+          camOff: !!meta.camOff,
           retryAttempt: attempt > 0 ? attempt : undefined,
         },
       }));
       reconnectTimersRef.current[remoteUid] = window.setTimeout(() => {
         delete reconnectTimersRef.current[remoteUid];
-        connectToPeer(remoteUid, meta.role, meta.displayName, !!meta.muted);
+        connectToPeer(remoteUid, meta.role, meta.displayName, !!meta.muted, !!meta.camOff);
       }, 400);
     },
     [connectToPeer, disconnectFromPeer],
@@ -707,6 +711,7 @@ export function useWebRTCMesh(
             role: data.role,
             displayName: data.displayName,
             muted: !!data.muted,
+            camOff: !!data.camOff,
             joinedAtMs,
           };
 
@@ -738,12 +743,13 @@ export function useWebRTCMesh(
                         displayName: data.displayName,
                         role: data.role,
                         muted: !!data.muted,
+                        camOff: !!data.camOff,
                       },
                     }
                   : prev,
               );
             } else {
-              connectToPeer(uid, data.role, data.displayName, !!data.muted);
+              connectToPeer(uid, data.role, data.displayName, !!data.muted, !!data.camOff);
             }
             // Follow their screen-share state, and offer them ours if we're
             // sharing when they arrive.
