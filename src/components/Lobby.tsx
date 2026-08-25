@@ -19,6 +19,11 @@ import type { ParticipantRole } from "@/hooks/useWebRTCMesh";
 export type JoinOptions = {
   startMuted: boolean;
   startCamOff: boolean;
+  // The untouched camera stream and (if blur is on) the pipeline producing
+  // the joined stream — the room needs both to toggle blur mid-call.
+  rawStream: MediaStream;
+  pipeline: BlurPipeline | null;
+  blurOn: boolean;
 };
 
 const ROLE_LABEL: Record<ParticipantRole, string> = {
@@ -319,7 +324,13 @@ export default function Lobby({ sessionId, role, initialName, onJoin }: Props) {
     joinedRef.current = true;
     try {
       await warmIceServers();
-      await onJoin(stream, name.trim(), { startMuted: micMuted, startCamOff: camOff });
+      await onJoin(stream, name.trim(), {
+        startMuted: micMuted,
+        startCamOff: camOff,
+        rawStream: rawStreamRef.current ?? stream,
+        pipeline: pipelineRef.current,
+        blurOn,
+      });
     } catch (err) {
       joinedRef.current = false;
       setJoining(false);

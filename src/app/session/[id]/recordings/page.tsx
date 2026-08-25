@@ -45,6 +45,7 @@ type RecordingDoc = {
   uploadState: "recording" | "uploading" | "complete";
   completedAt: Timestamp | null;
   composedPath: string | null;
+  previewPath: string | null;
   audioPath: string | null;
   transcript: string | null;
   transcriptStatus: "pending" | "done" | "error" | null;
@@ -491,7 +492,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
 
   useEffect(() => {
     let cancelled = false;
-    getDownloadURL(storageRef(storage, rec.composedPath!))
+    getDownloadURL(storageRef(storage, rec.previewPath ?? rec.composedPath!))
       .then((url) => {
         if (!cancelled) setStreamUrl(url);
       })
@@ -501,7 +502,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
     return () => {
       cancelled = true;
     };
-  }, [rec.composedPath]);
+  }, [rec.previewPath, rec.composedPath]);
 
   const download = async () => {
     setDownloading(true);
@@ -588,6 +589,21 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
             >
               {downloadingRaw ? "Raw…" : "Raw"}
             </button>
+            {rec.previewPath && (
+              <button
+                onClick={() =>
+                  void downloadStoragePath(
+                    rec.previewPath!,
+                    `${rec.displayName || rec.role}-take${rec.take}-720p.mp4`,
+                  )
+                }
+                disabled={deleting}
+                title="Smaller 720p MP4 — quick to share; Processed keeps full quality"
+                className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Optimised (720p)
+              </button>
+            )}
             {rec.audioPath && (
               <button
                 onClick={downloadAudio}
@@ -612,7 +628,15 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
       {loadError ? (
         <p className="text-xs text-red-400">Couldn&rsquo;t load this recording — refresh to try again.</p>
       ) : streamUrl ? (
-        <video src={streamUrl} controls playsInline className="w-full rounded-xl bg-black" />
+        <>
+          <video src={streamUrl} controls playsInline className="w-full rounded-xl bg-black" />
+          {!rec.previewPath && (
+            <p className="text-xs text-neutral-500">
+              Preparing an optimised preview — playing the full-quality original meanwhile, which may
+              buffer.
+            </p>
+          )}
+        </>
       ) : (
         <div className="flex aspect-video w-full items-center justify-center rounded-xl bg-black text-xs text-neutral-600">
           Loading player…
@@ -824,6 +848,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             extension: (data.extension as string) ?? "webm",
             completedAt: (data.completedAt as Timestamp) ?? null,
             composedPath: (data.composedPath as string) ?? null,
+            previewPath: (data.previewPath as string) ?? null,
             audioPath: (data.audioPath as string) ?? null,
             transcript: (data.transcript as string) ?? null,
             transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,

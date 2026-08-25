@@ -815,12 +815,31 @@ export function useWebRTCMesh(
     };
   }, []);
 
+  // Swaps the outgoing camera track on every live connection in place (blur
+  // toggled mid-call) — no renegotiation — and records the new stream as the
+  // one any future/rebuilt connection should send.
+  const replaceLocalVideoTrack = useCallback(async (track: MediaStreamTrack, nextStream: MediaStream) => {
+    localStreamRef.current = nextStream;
+    await Promise.all(
+      Object.values(peerConnectionsRef.current).map(async (pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+        if (!sender) return;
+        try {
+          await sender.replaceTrack(track);
+        } catch {
+          // Connection mid-teardown; its rebuild picks nextStream up anyway.
+        }
+      }),
+    );
+  }, []);
+
   return {
     peers: Object.values(peers),
     screenPeers: Object.values(screenPeers),
     localScreenStream,
     join,
     leave,
+    replaceLocalVideoTrack,
     replaceLocalStream,
     startScreenShare,
     stopScreenShare,

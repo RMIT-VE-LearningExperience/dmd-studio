@@ -656,3 +656,66 @@ exports.computeUsageStats = onSchedule(
     console.log(`Usage: ${files.length} objects, ${(storageBytes / 1024 ** 3).toFixed(2)} GB`);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Web preview: a 720p H.264 MP4 of each finished take for the player. The
+// composed original is the full recording bitrate (8–40 Mbps), which
+// buffers painfully over the internet; this is what the recordings page
+// streams, while both files stay available to download.
+// ---------------------------------------------------------------------------
+
+exports.makePreview = onDocumentUpdated(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "2GiB",
+    cpu: 4,
+    concurrency: 1,
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const after = event.data?.after?.data();
+    if (!after) return;
+    // Only once, right after compose; the success write (previewPath) and
+    // the failure write (previewError) both stop this re-firing.
+    if (!after.composedPath || after.previewPath || after.previewError) return;
+    if (after.audioOnly) return;
+
+    const { sessionId, recId } = event.params;
+    const bucket = getStorage().bucket(BUCKET);
+    const prefix = after.composedPath.slice(0, after.composedPath.lastIndexOf("/") + 1);
+    const previewName = `${prefix}preview.mp4`;
+    const tmpPath = path.join(os.tmpdir(), `${recId}-preview.mp4`);
+
+    try {
+      await runFfmpegArgs(
+        [
+          "-i", "pipe:0",
+          // Cap at 720p (never upscale), even width for yuv420p.
+          "-vf", "scale=-2:'min(720,ih)',format=yuv420p",
+          "-r", "30",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+          "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+          "-movflags", "+faststart",
+          tmpPath,
+        ],
+        bucket.file(after.composedPath).createReadStream(),
+      );
+      await bucket.upload(tmpPath, {
+        destination: previewName,
+        metadata: { contentType: "video/mp4" },
+      });
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        previewPath: previewName,
+      });
+      console.log(`Preview ready for ${sessionId}/${recId}: ${previewName}`);
+    } catch (err) {
+      console.error(`Preview transcode failed for ${sessionId}/${recId}:`, err);
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        previewError: String(err.message ?? err),
+      });
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  },
+);

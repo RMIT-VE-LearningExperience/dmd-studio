@@ -11,6 +11,7 @@ import {
   Settings,
   Video,
   VideoOff,
+  Sparkles,
 } from "lucide-react";
 import {
   addDoc,
@@ -38,6 +39,7 @@ import {
 } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import Lobby, { type JoinOptions } from "@/components/Lobby";
+import { createBlurredStream, type BlurPipeline } from "@/lib/backgroundBlur";
 import Teleprompter from "@/components/Teleprompter";
 
 // How long the on-screen countdown runs between the host pressing Record
@@ -676,6 +678,10 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [joined, setJoined] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const pipelineRef = useRef<BlurPipeline | null>(null);
+  const [blurOn, setBlurOn] = useState(false);
+  const [blurBusy, setBlurBusy] = useState(false);
   const [recordingFlag, setRecordingFlag] = useState<RecordingFlag | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
@@ -790,6 +796,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     replaceLocalStream,
     startScreenShare,
     stopScreenShare,
+    replaceLocalVideoTrack,
   } = useWebRTCMesh(sessionId, uid, role);
 
   // Join/leave announcements — derived by diffing the mesh's peer list, so
@@ -1014,6 +1021,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
 
   const handleJoin = async (stream: MediaStream, chosenName: string, options: JoinOptions) => {
     const startMuted = options.startMuted;
+    rawStreamRef.current = options.rawStream;
+    pipelineRef.current = options.pipeline;
+    setBlurOn(options.blurOn);
     localStreamRef.current = stream;
     setLocalStream(stream);
     setResolutionLabel(getVideoResolutionLabel(stream));
@@ -1273,6 +1283,40 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       { camOff: !next },
       { merge: true },
     ).catch(() => {});
+  };
+
+  // Mid-call blur toggle: swap the outgoing video track on every connection
+  // live. A running take is bound to the stream it started with, so the
+  // button is disabled while recording (fine between takes).
+  const toggleBlur = async () => {
+    const raw = rawStreamRef.current;
+    if (!raw || blurBusy || recordingStatus === "recording") return;
+    setBlurBusy(true);
+    try {
+      const audio = localStreamRef.current?.getAudioTracks() ?? raw.getAudioTracks();
+      let nextVideo: MediaStreamTrack | undefined;
+      if (blurOn) {
+        pipelineRef.current?.disposeKeepSource();
+        pipelineRef.current = null;
+        nextVideo = raw.getVideoTracks()[0];
+      } else {
+        const pipeline = await createBlurredStream(raw);
+        pipelineRef.current = pipeline;
+        nextVideo = pipeline.stream.getVideoTracks()[0];
+      }
+      if (!nextVideo) return;
+      nextVideo.enabled = camOn;
+      const nextStream = new MediaStream([nextVideo, ...audio]);
+      await replaceLocalVideoTrack(nextVideo, nextStream);
+      localStreamRef.current = nextStream;
+      setLocalStream(nextStream);
+      setResolutionLabel(getVideoResolutionLabel(nextStream) + (blurOn ? "" : " · blurred"));
+      setBlurOn(!blurOn);
+    } catch {
+      pushToast("Background blur isn't available on this device.", "error");
+    } finally {
+      setBlurBusy(false);
+    }
   };
 
   const leaveSession = async () => {
@@ -1777,6 +1821,24 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
               <VideoOff aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
             )}
           </ControlButton>
+
+          {!sessionSettings.audioOnly && (localStream?.getVideoTracks().length ?? 0) > 0 && (
+            <ControlButton
+              onClick={() => void toggleBlur()}
+              active={blurOn}
+              disabled={blurBusy || recordingStatus === "recording"}
+              title={
+                recordingStatus === "recording"
+                  ? "Blur can't be changed while a take is recording"
+                  : blurOn
+                    ? "Turn background blur off"
+                    : "Blur your background (video at up to 720p while blurred)"
+              }
+              label={blurBusy ? "Loading…" : blurOn ? "Blur on" : "Blur"}
+            >
+              <Sparkles aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
+            </ControlButton>
+          )}
 
           <ControlButton
             onClick={toggleScreenShare}
