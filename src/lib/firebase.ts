@@ -26,4 +26,13 @@ const app: FirebaseApp | undefined =
 export const auth = app ? getAuth(app) : (undefined as unknown as Auth);
 export const db = app ? getFirestore(app) : (undefined as unknown as Firestore);
 export const storage = app ? getStorage(app) : (undefined as unknown as FirebaseStorage);
+
+// The SDK abandons an operation that outlives these ceilings (defaults: 2 min
+// for downloads/lists/deletes, 10 min for uploads) with
+// "storage/retry-limit-exceeded" — even when it's progressing fine. Large
+// takes on ordinary connections routinely exceed both, so give them room.
+if (app) {
+  storage.maxOperationRetryTime = 30 * 60 * 1000;
+  storage.maxUploadRetryTime = 30 * 60 * 1000;
+}
 export default app;

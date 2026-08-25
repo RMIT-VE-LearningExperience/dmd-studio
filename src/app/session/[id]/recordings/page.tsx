@@ -14,7 +14,14 @@ import {
   updateDoc,
   Timestamp,
 } from "firebase/firestore";
-import { ref as storageRef, listAll, getBlob, getDownloadURL, type StorageReference } from "firebase/storage";
+import {
+  ref as storageRef,
+  listAll,
+  getBlob,
+  getDownloadURL,
+  updateMetadata,
+  type StorageReference,
+} from "firebase/storage";
 import { auth, db, storage } from "@/lib/firebase";
 import { deleteRecording } from "@/lib/deletion";
 import AppNav from "@/components/AppNav";
@@ -78,9 +85,28 @@ function triggerDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+// Hands the file to the browser's own downloader rather than pulling it
+// into memory through the SDK — that path hit the SDK's 2-minute operation
+// ceiling ("storage/retry-limit-exceeded") on any take bigger than a few
+// hundred MB. The content-disposition metadata is what makes the download
+// URL save-as instead of play-inline; setting it is best-effort (guests
+// lack write access to the host's files and still get the URL).
 async function downloadStoragePath(path: string, filename: string) {
-  const blob = await getBlob(storageRef(storage, path));
-  triggerDownload(blob, filename);
+  const ref = storageRef(storage, path);
+  const safeName = filename.replace(/["\\]/g, "");
+  await updateMetadata(ref, { contentDisposition: `attachment; filename="${safeName}"` }).catch(
+    () => {},
+  );
+  const url = await getDownloadURL(ref);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = safeName;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // Exact duration when the recorder captured one; chunk-count approximation
