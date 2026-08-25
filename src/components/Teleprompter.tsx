@@ -3,14 +3,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { AlignCenter, AlignLeft, AlignRight } from "lucide-react";
 
 type PrompterRole = "host" | "guest" | "producer";
+
+type TextAlign = "left" | "center" | "right";
 
 type SharedControl = {
   playing?: boolean;
   speed?: number;
   nonce?: number;
+  align?: TextAlign;
 };
+
+const ALIGN_KEY = "dmd-prompter-align";
+function readSavedAlign(): TextAlign {
+  if (typeof window === "undefined") return "center";
+  const v = window.localStorage.getItem(ALIGN_KEY);
+  return v === "left" || v === "right" ? v : "center";
+}
 
 type Props = {
   sessionId: string;
@@ -86,6 +97,12 @@ export default function Teleprompter({
     editingRef.current = editing;
   }, [editing]);
   const initializedRef = useRef(false);
+  const [align, setAlign] = useState<TextAlign>(() => readSavedAlign());
+  // Host-only: "Share with guests" pushes the host's script to the shared
+  // doc and flips the host into the producer-style directing mode.
+  const [hostShares, setHostShares] = useState(false);
+  const hostSharesRef = useRef(false);
+  const personalTextRef = useRef("");
   const lastNonceRef = useRef<number | null>(null);
   // Ref, not closure state: the shared-doc snapshot below must see a personal
   // script saved AFTER subscribing, or a later shared edit would clobber it.
@@ -106,6 +123,7 @@ export default function Teleprompter({
       }
       if (cancelled) return;
       hasPersonalRef.current = !!personal;
+      personalTextRef.current = personal;
       if (personal) {
         initializedRef.current = true;
         setFromShared(false);
@@ -120,7 +138,7 @@ export default function Teleprompter({
       unsubShared = onSnapshot(doc(db, "sessions", sessionId, "scripts", "shared"), (snap) => {
         const data = snap.data();
         const sharedText = (data?.text as string) ?? "";
-        const usesShared = role === "producer" || !hasPersonalRef.current;
+        const usesShared = role === "producer" || hostSharesRef.current || !hasPersonalRef.current;
 
         if (usesShared) {
           setFromShared(role !== "producer" && !!sharedText);
@@ -140,6 +158,9 @@ export default function Teleprompter({
         // producer/host's play state. Directors drive; they don't follow.
         const control = data?.control as SharedControl | undefined;
         if (usesShared && role === "guest" && control) {
+          if (control.align === "left" || control.align === "center" || control.align === "right") {
+            setAlign(control.align);
+          }
           if (typeof control.speed === "number") {
             setSpeed(Math.min(10, Math.max(1, Math.round(control.speed))));
           }
@@ -164,7 +185,7 @@ export default function Teleprompter({
 
   // Producers always direct; the host directs when reading the shared
   // script. Their play/pause/speed/restart also drive everyone following it.
-  const directsShared = role === "producer" || (role === "host" && fromShared);
+  const directsShared = role === "producer" || (role === "host" && (fromShared || hostShares));
   const publishControl = useCallback(
     (patch: SharedControl) => {
       if (!directsShared) return;
@@ -271,7 +292,7 @@ export default function Teleprompter({
     try {
       // Producers edit the shared script itself — everyone following it sees
       // the change live. Everyone else saves a personal copy.
-      const target = role === "producer" ? "shared" : uid;
+      const target = role === "producer" || hostSharesRef.current ? "shared" : uid;
       await setDoc(
         doc(db, "sessions", sessionId, "scripts", target),
         {
@@ -285,7 +306,10 @@ export default function Teleprompter({
       setFromShared(false);
       // Clearing a personal script drops back to following the shared one;
       // clearing the shared script also stops any run in progress.
-      if (role !== "producer") hasPersonalRef.current = !cleared;
+      if (role !== "producer" && !hostSharesRef.current) {
+        hasPersonalRef.current = !cleared;
+        personalTextRef.current = draft;
+      }
       setEditing(cleared);
       applyOffset(0);
       if (cleared) publishControl({ playing: false });
@@ -303,6 +327,45 @@ export default function Teleprompter({
     } catch {
       window.alert("Couldn't read that file — paste the text instead.");
     }
+  };
+
+  const shareWithGuests = async () => {
+    const body = (editing ? draft : text) ?? "";
+    try {
+      await setDoc(
+        doc(db, "sessions", sessionId, "scripts", "shared"),
+        { text: body, updatedAt: serverTimestamp(), control: { align } },
+        { merge: true },
+      );
+      hostSharesRef.current = true;
+      setHostShares(true);
+      setEditing(false);
+    } catch {
+      window.alert("Couldn't share the script — try again.");
+    }
+  };
+
+  const stopSharing = () => {
+    publishControl({ playing: false });
+    hostSharesRef.current = false;
+    setHostShares(false);
+    setPlaying(false);
+    const personal = personalTextRef.current;
+    if (personal) {
+      setText(personal);
+      setDraft(personal);
+      setFromShared(false);
+    }
+  };
+
+  const chooseAlign = (next: TextAlign) => {
+    setAlign(next);
+    try {
+      window.localStorage.setItem(ALIGN_KEY, next);
+    } catch {
+      // Private mode etc. — alignment just won't persist.
+    }
+    publishControl({ align: next });
   };
 
   const restart = () => {
@@ -335,7 +398,7 @@ export default function Teleprompter({
           title={mode === "floating" ? "Drag to move script" : undefined}
         >
           Teleprompter
-          {role === "producer" && (
+          {(role === "producer" || hostShares) && (
             <span className="ml-1.5 font-normal text-indigo-400">· shared — edits go live to everyone</span>
           )}
           {fromShared && !editing && role !== "producer" && (
@@ -393,6 +456,45 @@ export default function Teleprompter({
                 className="w-16 accent-indigo-500"
               />
             </label>
+            <div className="flex items-center gap-0.5 rounded-full border border-neutral-700 p-0.5" role="group" aria-label="Text alignment">
+              {(
+                [
+                  ["left", AlignLeft, "Align left"],
+                  ["center", AlignCenter, "Align centre"],
+                  ["right", AlignRight, "Align right"],
+                ] as const
+              ).map(([value, Icon, title]) => (
+                <button
+                  key={value}
+                  onClick={() => chooseAlign(value)}
+                  title={title}
+                  aria-pressed={align === value}
+                  className={`rounded-full p-1 transition ${
+                    align === value ? "bg-neutral-700 text-white" : "text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                </button>
+              ))}
+            </div>
+            {role === "host" && !hostShares && (
+              <button
+                onClick={() => void shareWithGuests()}
+                title="Push this script to every guest's prompter and drive it for them"
+                className="rounded-full border border-indigo-500/70 px-3 py-1 text-xs font-medium text-indigo-300 transition hover:bg-indigo-500/15"
+              >
+                Share with guests
+              </button>
+            )}
+            {role === "host" && hostShares && (
+              <button
+                onClick={stopSharing}
+                title="Back to your own script; guests keep the shared one"
+                className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+              >
+                Stop sharing
+              </button>
+            )}
             <button
               onClick={() => {
                 setPlaying(false);
@@ -472,7 +574,9 @@ export default function Teleprompter({
                 the reading line mid-panel. */}
             <div className="h-[20vh]" />
             <p
-              className="whitespace-pre-wrap font-medium leading-relaxed text-neutral-100"
+              className={`whitespace-pre-wrap font-medium leading-relaxed text-neutral-100 ${
+                align === "left" ? "text-left" : align === "right" ? "text-right" : "text-center"
+              }`}
               style={{ fontSize }}
             >
               {text}

@@ -687,6 +687,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [admission, setAdmission] = useState<"pending" | "denied" | null>(null);
   const [removed, setRemoved] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; text: string; tone: "info" | "success" | "error" }[]>([]);
+  const [unmutePrompt, setUnmutePrompt] = useState(false);
   const toastIdRef = useRef(0);
   const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
@@ -1192,7 +1193,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         void setDoc(snap.ref, { muteRequested: null, muted: true }, { merge: true }).catch(() => {});
       }
       if (data.unmuteRequested) {
-        pushToast("The host asked you to unmute — tap the mic button when you're ready.");
+        setUnmutePrompt(true);
         void setDoc(snap.ref, { unmuteRequested: null }, { merge: true }).catch(() => {});
       }
       // Removal forces the same teardown as Leave, minus the confirm.
@@ -1562,6 +1563,32 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           onSend={sendChat}
           onClose={() => setChatOpen(false)}
         />
+      )}
+      {unmutePrompt && !micOn && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
+          <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border-2 border-amber-400 bg-amber-500/15 p-8 text-center shadow-2xl">
+            <MicOff aria-hidden="true" className="h-12 w-12 text-amber-300" strokeWidth={1.8} />
+            <p className="text-xl font-semibold text-amber-100">The host asked you to unmute</p>
+            <p className="text-sm text-amber-200/80">
+              Your microphone is off — turn it on whenever you&rsquo;re ready to talk.
+            </p>
+            <button
+              onClick={() => {
+                toggleMic();
+                setUnmutePrompt(false);
+              }}
+              className="w-full rounded-full bg-emerald-500 px-6 py-3 text-base font-bold text-white transition hover:bg-emerald-400"
+            >
+              Unmute now
+            </button>
+            <button
+              onClick={() => setUnmutePrompt(false)}
+              className="text-xs text-amber-200/70 underline hover:text-amber-100"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
       )}
       {toasts.length > 0 && (
         <div className="fixed left-1/2 top-4 z-50 flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 flex-col items-center gap-1.5">
