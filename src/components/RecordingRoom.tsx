@@ -691,7 +691,6 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const toastIdRef = useRef(0);
   const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
   const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
@@ -1666,63 +1665,63 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             Device choices are remembered for the next time you join this browser.
             Camera and microphone switching is paused while recording.
           </p>
-        </div>
-      )}
-      {settingsOpen && (role === "host" || role === "producer") && (
-        <div className="fixed right-4 top-16 z-50 flex w-72 flex-col gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 shadow-xl backdrop-blur">
-          <p className="text-xs font-semibold text-neutral-300">Recording settings</p>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-neutral-500">Max video quality</span>
-            <select
-              value={String(sessionSettings.maxHeight ?? 1080)}
-              onChange={(e) =>
-                void setDoc(
-                  doc(db, "sessions", sessionId),
-                  { settings: { ...sessionSettings, maxHeight: Number(e.target.value) } },
-                  { merge: true },
-                ).catch(() => {})
-              }
-              className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500"
-            >
-              <option value="2160">Source (up to 4K)</option>
-              <option value="1080">1080p</option>
-              <option value="720">720p</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-xs text-neutral-300">
-            <input
-              type="checkbox"
-              checked={!!sessionSettings.audioOnly}
-              onChange={(e) =>
-                void setDoc(
-                  doc(db, "sessions", sessionId),
-                  { settings: { ...sessionSettings, audioOnly: e.target.checked } },
-                  { merge: true },
-                ).catch(() => {})
-              }
-              className="accent-indigo-500"
-            />
-            Audio-only session (podcast mode)
-          </label>
-          <label className="flex items-center gap-2 text-xs text-neutral-300">
-            <input
-              type="checkbox"
-              checked={!!sessionSettings.autoAdmit}
-              onChange={(e) =>
-                void setDoc(
-                  doc(db, "sessions", sessionId),
-                  { settings: { ...sessionSettings, autoAdmit: e.target.checked } },
-                  { merge: true },
-                ).catch(() => {})
-              }
-              className="accent-indigo-500"
-            />
-            Skip waiting room (auto-admit guests)
-          </label>
-          <p className="text-[11px] leading-relaxed text-neutral-500">
-            Applies to participants when they join or rejoin the studio — people already in the
-            call keep their current quality until they rejoin.
-          </p>
+          {(role === "host" || role === "producer") && (
+            <div className="mt-1 flex flex-col gap-3 border-t border-neutral-800 pt-3">
+              <p className="text-xs font-semibold text-neutral-300">Recording</p>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-neutral-500">Max video quality</span>
+                <select
+                  value={String(sessionSettings.maxHeight ?? 1080)}
+                  onChange={(e) =>
+                    void setDoc(
+                      doc(db, "sessions", sessionId),
+                      { settings: { ...sessionSettings, maxHeight: Number(e.target.value) } },
+                      { merge: true },
+                    ).catch(() => {})
+                  }
+                  className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs outline-none transition focus:border-indigo-500"
+                >
+                  <option value="2160">Source (up to 4K)</option>
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={!!sessionSettings.audioOnly}
+                  onChange={(e) =>
+                    void setDoc(
+                      doc(db, "sessions", sessionId),
+                      { settings: { ...sessionSettings, audioOnly: e.target.checked } },
+                      { merge: true },
+                    ).catch(() => {})
+                  }
+                  className="accent-indigo-500"
+                />
+                Audio-only session (podcast mode)
+              </label>
+              <label className="flex items-center gap-2 text-xs text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={!!sessionSettings.autoAdmit}
+                  onChange={(e) =>
+                    void setDoc(
+                      doc(db, "sessions", sessionId),
+                      { settings: { ...sessionSettings, autoAdmit: e.target.checked } },
+                      { merge: true },
+                    ).catch(() => {})
+                  }
+                  className="accent-indigo-500"
+                />
+                Skip waiting room (auto-admit guests)
+              </label>
+              <p className="text-[11px] leading-relaxed text-neutral-500">
+                Applies to participants when they join or rejoin the studio — people already in the
+                call keep their current quality until they rejoin.
+              </p>
+            </div>
+          )}
         </div>
       )}
       {inCountdown && (
@@ -1769,29 +1768,6 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           >
             Settings
           </button>
-          {(role === "host" || role === "producer") && (
-            <button
-              onClick={() => setSettingsOpen((o) => !o)}
-              className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
-                settingsOpen
-                  ? "border-indigo-500 text-indigo-300"
-                  : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
-              }`}
-            >
-              Recording
-            </button>
-          )}
-          {role === "host" && (
-            // New tab: navigating this tab away would tear down the live call.
-            <Link
-              href={`/session/${sessionId}/recordings`}
-              target="_blank"
-              rel="noopener"
-              className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
-            >
-              Recordings ↗
-            </Link>
-          )}
           <span className="rounded-full bg-neutral-800 px-3 py-1 text-xs font-medium text-neutral-400">
             {peers.length + 1} in the studio
           </span>
