@@ -486,7 +486,7 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [downloadingRaw, setDownloadingRaw] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [downloadingAudio, setDownloadingAudio] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -509,24 +509,12 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
     try {
       await downloadStoragePath(
         rec.composedPath!,
-        `${rec.displayName || rec.role}-take${rec.take}-processed.${rec.extension}`,
+        `${rec.displayName || rec.role}-take${rec.take}-original.${rec.extension}`,
       );
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Download failed — try again.");
     } finally {
       setDownloading(false);
-    }
-  };
-
-  const downloadRaw = async () => {
-    setDownloadingRaw(true);
-    try {
-      const blob = await stitchRecording(sessionId, rec, () => {});
-      triggerDownload(blob, `${rec.displayName || rec.role}-take${rec.take}-raw.${rec.extension}`);
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Raw download failed — try again.");
-    } finally {
-      setDownloadingRaw(false);
     }
   };
 
@@ -573,45 +561,68 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
           >
             Rename
           </button>
-          <div className="flex flex-wrap items-center gap-2 rounded-full border border-neutral-700 px-2 py-1">
-            <span className="px-2 text-xs font-medium text-neutral-400">Download</span>
+          <div className="relative">
             <button
-              onClick={download}
-              disabled={downloading || deleting}
-              className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
+              onClick={() => setMenuOpen((o) => !o)}
+              disabled={deleting}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              title="Download options"
+              className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-300 transition hover:border-neutral-500 disabled:opacity-50"
             >
-              {downloading ? "Processed…" : "Processed"}
+              {downloading || downloadingAudio ? "Preparing…" : "Download ⋯"}
             </button>
-            <button
-              onClick={downloadRaw}
-              disabled={downloadingRaw || deleting}
-              className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
-            >
-              {downloadingRaw ? "Raw…" : "Raw"}
-            </button>
-            {rec.previewPath && (
-              <button
-                onClick={() =>
-                  void downloadStoragePath(
-                    rec.previewPath!,
-                    `${rec.displayName || rec.role}-take${rec.take}-720p.mp4`,
-                  )
-                }
-                disabled={deleting}
-                title="Smaller 720p MP4 — quick to share; Processed keeps full quality"
-                className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
-              >
-                Optimised (720p)
-              </button>
-            )}
-            {rec.audioPath && (
-              <button
-                onClick={downloadAudio}
-                disabled={downloadingAudio || deleting}
-                className="rounded-full px-3 py-1 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:opacity-50"
-              >
-                {downloadingAudio ? "Audio…" : "Audio"}
-              </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                <div
+                  role="menu"
+                  className="absolute right-0 z-50 mt-1 flex w-60 flex-col overflow-hidden rounded-xl border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+                >
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void download();
+                    }}
+                    className="px-4 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800"
+                  >
+                    Original (full quality)
+                    <span className="block text-[11px] text-neutral-500">
+                      .{rec.extension} · {formatBytes(rec.totalBytes)}
+                    </span>
+                  </button>
+                  {rec.previewPath && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void downloadStoragePath(
+                          rec.previewPath!,
+                          `${rec.displayName || rec.role}-take${rec.take}-720p.mp4`,
+                        );
+                      }}
+                      className="px-4 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      Optimised (720p)
+                      <span className="block text-[11px] text-neutral-500">MP4 · smaller, quick to share</span>
+                    </button>
+                  )}
+                  {rec.audioPath && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void downloadAudio();
+                      }}
+                      className="px-4 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      Audio only
+                      <span className="block text-[11px] text-neutral-500">WAV · 48 kHz stereo</span>
+                    </button>
+                  )}
+                </div>
+              </>
             )}
           </div>
           <button
