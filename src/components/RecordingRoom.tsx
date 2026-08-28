@@ -40,6 +40,8 @@ import {
   mixAudioTracks,
 } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
+import { recallInvite, type Invite } from "@/lib/invites";
+import InviteGate from "@/components/InviteGate";
 import Lobby, { type JoinOptions } from "@/components/Lobby";
 import { createBlurredStream, type BlurPipeline } from "@/lib/backgroundBlur";
 import Teleprompter from "@/components/Teleprompter";
@@ -707,6 +709,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
   const [sessionKind, setSessionKind] = useState<"podcast" | "tutorial">("podcast");
   const isTutorial = sessionKind === "tutorial";
+  // Invite-only sessions ask guests for their invited email before the
+  // lobby; the verified invite is remembered per session in localStorage.
+  const [inviteOnly, setInviteOnly] = useState(false);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [invite, setInvite] = useState<Invite | null>(() =>
+    typeof window === "undefined" ? null : recallInvite(sessionId),
+  );
   // Tutorial self-recording: the teacher's own take counter (persisted on
   // their participant doc so a refresh can't reuse a take number), the local
   // 3-2-1 countdown, and the mic+tab audio mixer feeding the screen track.
@@ -885,6 +894,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       setRecordingFlag((data?.recording as RecordingFlag) ?? null);
       setSessionSettings((data?.settings as CaptureSettings) ?? {});
       setSessionKind(data?.kind === "tutorial" ? "tutorial" : "podcast");
+      setInviteOnly(data?.inviteOnly === true);
+      setSessionLoaded(true);
     });
     return unsub;
   }, [sessionId]);
@@ -1056,7 +1067,10 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       { merge: true },
     ).catch(() => {});
     const meta = { displayName: name, role };
-    start(camera, take, meta);
+    // Camera off (lobby toggle or the in-studio button) = screen-only take:
+    // no point saving a black camera file next to the screen.
+    const cameraLive = camera.getVideoTracks().some((t) => t.enabled && t.readyState === "live");
+    if (cameraLive) start(camera, take, meta);
     // Screen track = screen video + (mic + any tab audio) mixed, so the
     // editors get one file that already carries the voice.
     const mixer = mixAudioTracks([...camera.getAudioTracks(), ...screen.getAudioTracks()]);
@@ -1109,7 +1123,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   // participant's camera recording doc; the recordings page turns them into
   // jump points and a copyable list for the editors.
   const addMarker = () => {
-    if (recordingStatus !== "recording") return;
+    if (isTutorial ? !selfRecording : recordingStatus !== "recording") return;
     // (Computed inline rather than via `elapsed`, which is declared further
     // down — the compiler lint rejects reading it from up here.)
     const atMs = isTutorial
@@ -1121,8 +1135,12 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         : 0;
     const take = isTutorial ? selfTakeRef.current : (recordingFlag?.take ?? 0);
     if (!take) return;
+    // Screen-only tutorial takes have no camera doc — the marker lands on
+    // the screen doc instead (the recordings page merges both anyway).
+    const recId =
+      isTutorial && recordingStatus !== "recording" ? `${uid}_screen_take${take}` : `${uid}_take${take}`;
     void setDoc(
-      doc(db, "sessions", sessionId, "recordings", `${uid}_take${take}`),
+      doc(db, "sessions", sessionId, "recordings", recId),
       { markers: arrayUnion({ atMs: Math.round(atMs), addedAt: Date.now() }) },
       { merge: true },
     ).catch(() => {});
@@ -1175,6 +1193,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
 
   const handleJoin = async (stream: MediaStream, chosenName: string, options: JoinOptions) => {
     const startMuted = options.startMuted;
+    const inviteFields = invite ? { inviteKey: invite.key, email: invite.email } : {};
     rawStreamRef.current = options.rawStream;
     pipelineRef.current = options.pipeline;
     setBlurOn(options.blurOn);
@@ -1229,7 +1248,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     const autoAdmit = sessionSnap.data()?.settings?.autoAdmit === true;
     if (autoAdmit && existing.data()?.admission !== "denied") {
       try {
-        await setDoc(participantRef, { admission: "admitted" }, { merge: true });
+        await setDoc(participantRef, { admission: "admitted", role, ...inviteFields }, { merge: true });
         await join(stream, chosenName);
         await setDoc(participantRef, { muted: startMuted, camOff: options.startCamOff }, { merge: true });
         setJoined(true);
@@ -1248,6 +1267,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         muted: startMuted,
         camOff: options.startCamOff,
         knockedAt: serverTimestamp(),
+        ...inviteFields,
       },
       { merge: true },
     );
@@ -1589,6 +1609,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         </button>
       </div>
     );
+  }
+
+  if (!joined && !sessionLoaded) {
+    return <p className="p-6 text-neutral-500">Loading…</p>;
+  }
+
+  if (!joined && inviteOnly && role === "guest" && !invite) {
+    return <InviteGate sessionId={sessionId} onVerified={setInvite} />;
   }
 
   if (!joined) {
@@ -2123,7 +2151,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
                 ? "Stop recording"
                 : selfCountdown !== null
                   ? "Starting…"
-                  : "Record screen + camera"}
+                  : camOn
+                    ? "Record screen + camera"
+                    : "Record screen only"}
             </button>
           )}
           {!isTutorial && role === "host" && (
@@ -2139,7 +2169,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             </button>
           )}
 
-          {isRecordingParticipant && recordingStatus === "recording" && (
+          {isRecordingParticipant && (isTutorial ? selfRecording : recordingStatus === "recording") && (
             <button
               onClick={addMarker}
               title="Drop a chapter marker at this moment (or press M)"

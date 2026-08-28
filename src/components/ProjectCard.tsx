@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, serverTimestamp, updateDoc, Timestamp } from "firebase/firestore";
-import { CalendarDays, FileText, FolderOpen, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
+import { CalendarDays, FileText, FolderOpen, Mail, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
 import { db } from "@/lib/firebase";
 import type { Project } from "@/hooks/useProjects";
+import InvitesModal from "@/components/InvitesModal";
 
 function formatDate(ts: Timestamp | null) {
   if (!ts) return "Just now";
@@ -26,6 +27,7 @@ type Props = {
 export default function ProjectCard({ project, onScript }: Props) {
   const router = useRouter();
   const [renaming, setRenaming] = useState(false);
+  const [invitesOpen, setInvitesOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [scheduling, setScheduling] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState("");
@@ -256,6 +258,20 @@ export default function ProjectCard({ project, onScript }: Props) {
                 <FileText aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
                 Script
               </button>
+              {project.kind === "tutorial" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    setInvitesOpen(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
+                >
+                  <Mail aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                  Invites
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {
@@ -295,6 +311,9 @@ export default function ProjectCard({ project, onScript }: Props) {
                 {deleting ? "Deleting..." : "Delete"}
               </button>
             </div>
+          )}
+          {invitesOpen && (
+            <InvitesModal sessionId={project.id} title={project.title} onClose={() => setInvitesOpen(false)} />
           )}
         </div>
       </div>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { CalendarClock, Check, Copy, Link2, X } from "lucide-react";
 import type { User } from "firebase/auth";
 import { createProject, type SessionKind } from "@/hooks/useProjects";
+import { addInvites, parseEmailList } from "@/lib/invites";
 
 type Props = {
   user: User;
@@ -71,6 +72,8 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
   const [scheduledDate, setScheduledDate] = useState(() => toDateInput(initialStart));
   const [scheduledTime, setScheduledTime] = useState(() => toTimeInput(initialStart));
   const [durationMinutes, setDurationMinutes] = useState(60);
+  const [inviteText, setInviteText] = useState("");
+  const [invitedEmails, setInvitedEmails] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -96,14 +99,33 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
       return;
     }
 
+    // Tutorials are invite-only: the teacher link is a self-serve recording
+    // booth, so it must not be open to anyone who stumbles on the URL.
+    let emails: string[] = [];
+    if (kind === "tutorial") {
+      const parsed = parseEmailList(inviteText);
+      if (parsed.invalid.length) {
+        window.alert(`These don't look like email addresses: ${parsed.invalid.join(", ")}`);
+        return;
+      }
+      if (!parsed.emails.length) {
+        window.alert("Add at least one teacher's email address so only they can record.");
+        return;
+      }
+      emails = parsed.emails;
+    }
+
     setCreating(true);
     try {
       const id = await createProject(user, {
         title,
         kind,
+        inviteOnly: emails.length > 0,
         scheduledAt: when,
         durationMinutes,
       });
+      if (emails.length) await addInvites(id, emails);
+      setInvitedEmails(emails);
       setCreatedId(id);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Failed to plan recording.");
@@ -174,6 +196,24 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                 ))}
               </div>
             </div>
+
+            {kind === "tutorial" && (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-neutral-500">Invite teachers (email addresses)</span>
+                <textarea
+                  value={inviteText}
+                  onChange={(e) => setInviteText(e.target.value)}
+                  disabled={!!createdId}
+                  rows={3}
+                  placeholder="one per line, or separated by commas"
+                  className="w-full min-w-0 resize-y rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                />
+                <span className="text-xs leading-5 text-neutral-500">
+                  Only these addresses can open the teacher link — they&apos;ll be asked for their email
+                  before entering the studio. You can edit the list later from the project card.
+                </span>
+              </label>
+            )}
 
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-neutral-500">Project title</span>
@@ -294,6 +334,11 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                     </button>
                   ))}
                 </div>
+                {invitedEmails.length > 0 && (
+                  <p className="text-xs leading-5 text-neutral-500">
+                    Invited: <span className="text-neutral-300">{invitedEmails.join(", ")}</span>
+                  </p>
+                )}
                 <div className="flex flex-wrap gap-2 pt-1">
                   <button
                     type="button"
@@ -313,8 +358,10 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
               </>
             ) : (
               <p className="text-xs leading-5 text-neutral-500">
-                Links are generated after the recording is planned. Guests use the guest link;
-                producers use the producer link.
+                Links are generated after the recording is planned.{" "}
+                {kind === "tutorial"
+                  ? "Teachers use the teacher link (and must enter an invited email); producers use the producer link."
+                  : "Guests use the guest link; producers use the producer link."}
               </p>
             )}
           </div>

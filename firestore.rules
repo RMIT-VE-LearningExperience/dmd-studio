@@ -26,6 +26,23 @@ service cloud.firestore {
           .data.get('settings', {}).get('autoAdmit', false) == true;
       }
 
+      // Invite-only sessions (tutorials with a guest list): a guest's
+      // participant doc must carry the key of an invite that exists under
+      // /invites — the client gets it by hashing the email they typed.
+      // Hosts and producers aren't gated; neither is a rejoin that leaves
+      // admission untouched.
+      function inviteOnly() {
+        return get(/databases/$(database)/documents/sessions/$(sessionId))
+          .data.get('inviteOnly', false) == true;
+      }
+      function guestInviteOk() {
+        return !inviteOnly()
+          || request.resource.data.get('role', 'guest') != 'guest'
+          || (request.resource.data.get('inviteKey', '') is string
+              && request.resource.data.get('inviteKey', '') != ''
+              && exists(/databases/$(database)/documents/sessions/$(sessionId)/invites/$(request.resource.data.inviteKey)));
+      }
+
       // An admitted producer — allowed to rename other participants, but
       // nothing else that isSessionHost() alone would otherwise gate.
       function isAdmittedProducer() {
@@ -68,7 +85,8 @@ service cloud.firestore {
         // (unless the host turned auto-admit on) and never self-deny.
         allow create: if request.auth != null && request.auth.uid == uid
           && request.resource.data.get('admission', 'pending') != 'denied'
-          && (request.resource.data.get('admission', 'pending') != 'admitted' || autoAdmitOn());
+          && (request.resource.data.get('admission', 'pending') != 'admitted' || autoAdmitOn())
+          && guestInviteOk();
         // …and later self-updates may only leave admission untouched, knock
         // again ('pending'), or self-admit under auto-admit — but a denied
         // (removed) participant can't auto-admit themselves back in.
@@ -77,11 +95,20 @@ service cloud.firestore {
               || request.resource.data.get('admission', '') == 'pending'
               || (request.resource.data.get('admission', '') == 'admitted'
                   && autoAdmitOn()
-                  && resource.data.get('admission', '') != 'denied'));
+                  && resource.data.get('admission', '') != 'denied'
+                  && guestInviteOk()));
         // A producer may rename someone else, but touch nothing else on
         // their doc — can't use this to admit, deny, or mute.
         allow update: if isAdmittedProducer()
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName']);
+      }
+
+      match /invites/{inviteKey} {
+        // Guest list for invite-only sessions, keyed by sha256(email). Any
+        // signed-in visitor may `get` one doc (that's the email check), but
+        // only the host can list or edit — so the list can't be enumerated.
+        allow get: if request.auth != null;
+        allow list, write: if isSessionHost();
       }
 
       match /connections/{pairId} {

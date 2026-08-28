@@ -28,6 +28,8 @@ export type Project = {
   // "podcast": host-driven synchronised takes (the original studio).
   // "tutorial": each teacher records their own screen + camera on demand.
   kind: SessionKind;
+  // Tutorials with an invite list: guests must enter an invited email.
+  inviteOnly: boolean;
   createdAt: Timestamp | null;
   scheduledAt: Timestamp | null;
   durationMinutes: number | null;
@@ -40,6 +42,7 @@ export type Project = {
 export type CreateProjectInput = {
   title?: string;
   kind?: SessionKind;
+  inviteOnly?: boolean;
   scheduledAt?: Date;
   durationMinutes?: number;
 };
@@ -77,6 +80,7 @@ export function useProjects() {
           id: docSnap.id,
           title: (data.title as string) || "Untitled",
           kind: data.kind === "tutorial" ? "tutorial" : "podcast",
+          inviteOnly: data.inviteOnly === true,
           createdAt: (data.createdAt as Timestamp) ?? null,
           scheduledAt: (data.scheduledAt as Timestamp) ?? null,
           durationMinutes: (data.durationMinutes as number) ?? null,
@@ -121,6 +125,7 @@ export async function createProject(
     kind: input.kind ?? "podcast",
     // A teacher recording a tutorial works alone — no host at the door.
     ...(input.kind === "tutorial" ? { settings: { autoAdmit: true } } : {}),
+    ...(input.inviteOnly ? { inviteOnly: true } : {}),
     createdAt: serverTimestamp(),
     ...(input.scheduledAt ? { scheduledAt: Timestamp.fromDate(input.scheduledAt) } : {}),
     ...(durationMinutes ? { durationMinutes } : {}),

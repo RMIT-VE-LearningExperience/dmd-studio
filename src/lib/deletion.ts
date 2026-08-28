@@ -55,6 +55,7 @@ export async function deleteProject(sessionId: string) {
     deleteCollection(`sessions/${sessionId}/chat`),
     deleteCollection(`sessions/${sessionId}/episodes`),
     deleteCollection(`sessions/${sessionId}/recordings`),
+    deleteCollection(`sessions/${sessionId}/invites`),
   ]);
   await deleteDoc(doc(db, "sessions", sessionId));
 }
