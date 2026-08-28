@@ -172,3 +172,30 @@ export function pickRecorderOptions(videoWidth: number, videoHeight: number): Re
 
   return { ...match, videoBitsPerSecond, audioBitsPerSecond: 192_000 };
 }
+
+// Mixes several audio tracks (the teacher's mic + the shared tab's audio)
+// into one track, so a tutorial's screen recording carries the voice
+// instead of leaving editors to sync two files. A disabled (muted) source
+// simply contributes silence.
+export function mixAudioTracks(tracks: MediaStreamTrack[]): {
+  track: MediaStreamTrack;
+  close: () => void;
+} {
+  const ctx = new AudioContext();
+  const destination = ctx.createMediaStreamDestination();
+  const sources = tracks
+    .filter((t) => t.kind === "audio" && t.readyState === "live")
+    .map((t) => {
+      const source = ctx.createMediaStreamSource(new MediaStream([t]));
+      source.connect(destination);
+      return source;
+    });
+  void ctx.resume().catch(() => {});
+  return {
+    track: destination.stream.getAudioTracks()[0],
+    close: () => {
+      sources.forEach((s) => s.disconnect());
+      void ctx.close().catch(() => {});
+    },
+  };
+}

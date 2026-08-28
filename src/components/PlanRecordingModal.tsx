@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, Check, Copy, Link2, X } from "lucide-react";
 import type { User } from "firebase/auth";
-import { createProject } from "@/hooks/useProjects";
+import { createProject, type SessionKind } from "@/hooks/useProjects";
 
 type Props = {
   user: User;
@@ -67,6 +67,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
   const router = useRouter();
   const initialStart = useMemo(() => defaultStart(initialDate), [initialDate]);
   const [title, setTitle] = useState("Untitled");
+  const [kind, setKind] = useState<SessionKind>("podcast");
   const [scheduledDate, setScheduledDate] = useState(() => toDateInput(initialStart));
   const [scheduledTime, setScheduledTime] = useState(() => toTimeInput(initialStart));
   const [durationMinutes, setDurationMinutes] = useState(60);
@@ -79,10 +80,14 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
     if (!createdId) return [];
     return [
       { key: "host", label: "Host", url: `${origin}/session/${createdId}` },
-      { key: "guest", label: "Guest", url: `${origin}/session/${createdId}?role=guest` },
+      {
+        key: "guest",
+        label: kind === "tutorial" ? "Teacher" : "Guest",
+        url: `${origin}/session/${createdId}?role=guest`,
+      },
       { key: "producer", label: "Producer", url: `${origin}/session/${createdId}?role=producer` },
     ];
-  }, [createdId, origin]);
+  }, [createdId, origin, kind]);
 
   const create = async () => {
     const when = fromDateAndTime(scheduledDate, scheduledTime);
@@ -95,6 +100,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
     try {
       const id = await createProject(user, {
         title,
+        kind,
         scheduledAt: when,
         durationMinutes,
       });
@@ -141,6 +147,34 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
 
         <div className="grid min-w-0 gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.85fr)]">
           <div className="flex min-w-0 flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-neutral-500">Session type</span>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    ["podcast", "Podcast / interview", "Host runs the recording; everyone's takes start together."],
+                    ["tutorial", "Tutorial", "The teacher records their own screen + camera whenever they're ready. No host needed."],
+                  ] as const
+                ).map(([value, heading, blurb]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setKind(value)}
+                    disabled={!!createdId}
+                    aria-pressed={kind === value}
+                    className={`rounded-xl border p-3 text-left transition disabled:opacity-60 ${
+                      kind === value
+                        ? "border-indigo-500 bg-indigo-500/10"
+                        : "border-neutral-700 hover:border-neutral-500"
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">{heading}</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-neutral-400">{blurb}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-neutral-500">Project title</span>
               <input

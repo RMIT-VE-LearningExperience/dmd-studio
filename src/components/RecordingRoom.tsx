@@ -36,6 +36,7 @@ import {
   listMediaDevices,
   type CaptureSettings,
   type MediaDeviceChoice,
+  mixAudioTracks,
 } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import Lobby, { type JoinOptions } from "@/components/Lobby";
@@ -230,6 +231,7 @@ function VideoTile({
   speakerId,
   cameraOff,
   personName,
+  className,
 }: {
   stream: MediaStream | null;
   muted: boolean;
@@ -243,6 +245,7 @@ function VideoTile({
   // avatar instead of a plain black rectangle.
   cameraOff?: boolean;
   personName?: string;
+  className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useIsSpeaking(stream, !!highlightSpeaking);
@@ -263,7 +266,7 @@ function VideoTile({
 
   return (
     <div
-      className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${
+      className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${className ?? ""} ${
         speaking
           ? "border-emerald-400 shadow-[0_0_0_4px_rgba(16,185,129,0.72),0_0_28px_rgba(16,185,129,0.3)]"
           : failed
@@ -691,6 +694,16 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const toastIdRef = useRef(0);
   const [leftAfterRecording, setLeftAfterRecording] = useState(false);
   const [sessionSettings, setSessionSettings] = useState<CaptureSettings>({});
+  const [sessionKind, setSessionKind] = useState<"podcast" | "tutorial">("podcast");
+  const isTutorial = sessionKind === "tutorial";
+  // Tutorial self-recording: the teacher's own take counter (persisted on
+  // their participant doc so a refresh can't reuse a take number), the local
+  // 3-2-1 countdown, and the mic+tab audio mixer feeding the screen track.
+  const selfTakeRef = useRef(0);
+  const [selfCountdown, setSelfCountdown] = useState<number | null>(null);
+  const [selfStartedAt, setSelfStartedAt] = useState<number | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const mixerRef = useRef<{ track: MediaStreamTrack; close: () => void } | null>(null);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
   const [microphones, setMicrophones] = useState<MediaDeviceChoice[]>([]);
@@ -857,6 +870,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       const data = snap.data({ serverTimestamps: "estimate" });
       setRecordingFlag((data?.recording as RecordingFlag) ?? null);
       setSessionSettings((data?.settings as CaptureSettings) ?? {});
+      setSessionKind(data?.kind === "tutorial" ? "tutorial" : "podcast");
     });
     return unsub;
   }, [sessionId]);
@@ -876,7 +890,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   }, [joined, role, sessionId]);
 
   useEffect(() => {
-    if (!joined || !isRecordingParticipant) return;
+    if (!joined || !isRecordingParticipant || isTutorial) return;
     const stream = localStreamRef.current;
     // Recorders only start once the shared countdown (startedAt + COUNTDOWN_MS)
     // has elapsed, and never while the previous take is still "finishing" —
@@ -896,14 +910,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     } else if (recordingFlag && !recordingFlag.active && recordingStatus === "recording") {
       stopAndUpload();
     }
-  }, [recordingFlag, joined, isRecordingParticipant, recordingStatus, start, stopAndUpload, name, role, now]);
+  }, [recordingFlag, joined, isRecordingParticipant, isTutorial, recordingStatus, start, stopAndUpload, name, role, now]);
 
   // The screen recorder follows the same take clock as the camera, but only
   // while a screen is actually shared — sharing mid-take starts a screen
   // track from that moment (startedAtMs keeps it aligned in the episode),
   // and stopping the share mid-take finishes just the screen upload.
   useEffect(() => {
-    if (!joined || !isRecordingParticipant) return;
+    if (!joined || !isRecordingParticipant || isTutorial) return;
     const target = recordingFlag?.startedAt ? recordingFlag.startedAt.toMillis() + COUNTDOWN_MS : null;
     const takeRunning = !!recordingFlag?.active && target !== null && now >= target;
     if (
@@ -917,7 +931,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     } else if ((!recordingFlag?.active || !localScreenStream) && screenRecStatus === "recording") {
       void stopScreenRec();
     }
-  }, [recordingFlag, joined, isRecordingParticipant, localScreenStream, screenRecStatus, startScreenRec, stopScreenRec, name, role, now]);
+  }, [recordingFlag, joined, isRecordingParticipant, isTutorial, localScreenStream, screenRecStatus, startScreenRec, stopScreenRec, name, role, now]);
 
   const refreshDevices = useCallback(async () => {
     try {
@@ -968,36 +982,123 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }
   };
 
-  const toggleScreenShare = async () => {
-    if (localScreenStream) {
-      if (screenRecStatus === "recording") void stopScreenRec();
-      await stopScreenShare();
-      return;
-    }
+  // Tutorials capture the screen at 30fps (cursor movement reads far better
+  // than 15) and ask for tab/system audio so demos with sound come through;
+  // calls keep the lighter 15fps, video-only share.
+  const acquireScreen = async (): Promise<MediaStream | null> => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15 } },
-        audio: false,
+        video: { frameRate: { ideal: isTutorial ? 30 : 15 } },
+        audio: isTutorial,
       });
       // The browser's own "Stop sharing" bar bypasses our button.
       stream.getVideoTracks()[0]?.addEventListener("ended", () => {
         void stopScreenRec();
+        mixerRef.current?.close();
+        mixerRef.current = null;
+        screenStreamRef.current = null;
         void stopScreenShare();
       });
+      screenStreamRef.current = stream;
       await startScreenShare(stream);
+      return stream;
     } catch {
-      // User dismissed the screen picker.
+      return null; // User dismissed the screen picker.
     }
   };
+
+  const toggleScreenShare = async () => {
+    if (localScreenStream) {
+      if (screenRecStatus === "recording") void stopScreenRec();
+      mixerRef.current?.close();
+      mixerRef.current = null;
+      screenStreamRef.current = null;
+      await stopScreenShare();
+      return;
+    }
+    await acquireScreen();
+  };
+
+  // ---- Tutorial self-recording -------------------------------------------
+  const selfRecording = recordingStatus === "recording" || screenRecStatus === "recording";
+
+  useEffect(() => {
+    if (!joined || !isTutorial) return;
+    getDoc(doc(db, "sessions", sessionId, "participants", uid))
+      .then((snap) => {
+        selfTakeRef.current = (snap.data()?.selfTakeCount as number) ?? 0;
+      })
+      .catch(() => {});
+  }, [joined, isTutorial, sessionId, uid]);
+
+  const beginSelfTake = (screen: MediaStream) => {
+    const camera = localStreamRef.current;
+    if (!camera) return;
+    const take = selfTakeRef.current + 1;
+    selfTakeRef.current = take;
+    void setDoc(
+      doc(db, "sessions", sessionId, "participants", uid),
+      { selfTakeCount: take },
+      { merge: true },
+    ).catch(() => {});
+    const meta = { displayName: name, role };
+    start(camera, take, meta);
+    // Screen track = screen video + (mic + any tab audio) mixed, so the
+    // editors get one file that already carries the voice.
+    const mixer = mixAudioTracks([...camera.getAudioTracks(), ...screen.getAudioTracks()]);
+    mixerRef.current = mixer;
+    const screenVideo = screen.getVideoTracks()[0];
+    if (screenVideo) {
+      startScreenRec(new MediaStream([screenVideo, mixer.track]), take, meta);
+    }
+    setSelfStartedAt(Date.now());
+    setNow(Date.now());
+  };
+
+  const startSelfRecording = async () => {
+    if (selfRecording || selfCountdown !== null) return;
+    // The screen is the point of a tutorial — get it before anything else
+    // (getDisplayMedia needs the click's user activation).
+    let screen = screenStreamRef.current;
+    if (!screen) {
+      screen = await acquireScreen();
+      if (!screen) {
+        pushToast("Share your screen to record a tutorial.", "error");
+        return;
+      }
+    }
+    const chosen = screen;
+    let remaining = 3;
+    setSelfCountdown(remaining);
+    const tick = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setSelfCountdown(remaining);
+        return;
+      }
+      window.clearInterval(tick);
+      setSelfCountdown(null);
+      beginSelfTake(chosen);
+    }, 1000);
+  };
+
+  const stopSelfRecording = () => {
+    void stopAndUpload();
+    void stopScreenRec();
+    mixerRef.current?.close();
+    mixerRef.current = null;
+    setSelfStartedAt(null);
+  };
+
 
   // Ticker driving both the countdown overlay and the REC timer — everything
   // is derived at render from the shared startedAt timestamp, so every
   // participant's clock reads the same.
   useEffect(() => {
-    if (!recordingFlag?.active) return;
+    if (!recordingFlag?.active && !selfRecording) return;
     const interval = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(interval);
-  }, [recordingFlag?.active]);
+  }, [recordingFlag?.active, selfRecording]);
 
   const recordStartMs =
     recordingFlag?.active && recordingFlag.startedAt
@@ -1462,6 +1563,20 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const isRecordingActive = recordingFlag?.active ?? false;
   const callTiles = (
     <>
+      {isTutorial && (
+        <>
+      {localScreenStream && (
+        <VideoTile
+          stream={localScreenStream}
+          muted
+          speakerId={speakerId}
+          label={`${name} (Your screen)`}
+          badge={screenRecStatus === "recording" ? "REC" : undefined}
+          className={isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined}
+        />
+      )}
+        </>
+      )}
       <VideoTile
         stream={localStream}
         muted
@@ -1474,6 +1589,8 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         badge={[resolutionLabel, !micOn ? "Muted" : null].filter(Boolean).join(" · ") || undefined}
       />
 
+      {!isTutorial && (
+        <>
       {localScreenStream && (
         <VideoTile
           stream={localScreenStream}
@@ -1481,7 +1598,10 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           speakerId={speakerId}
           label={`${name} (Your screen)`}
           badge={screenRecStatus === "recording" ? "REC" : undefined}
+          className={isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined}
         />
+      )}
+        </>
       )}
 
       {peers.map((peer) => (
@@ -1546,7 +1666,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         />
       ))}
 
-      {peers.length === 0 && <VideoTile stream={null} muted label="Waiting for others to join…" />}
+      {peers.length === 0 && !isTutorial && <VideoTile stream={null} muted label="Waiting for others to join…" />}
     </>
   );
 
@@ -1724,9 +1844,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           )}
         </div>
       )}
-      {inCountdown && (
+      {(inCountdown || selfCountdown !== null) && (
         <div className="studio-fade-in fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
-          <span className="text-8xl font-bold tabular-nums text-white">{countdownSeconds}</span>
+          <span className="text-8xl font-bold tabular-nums text-white">{selfCountdown ?? countdownSeconds}</span>
           <span className="text-sm text-neutral-300">Recording is about to start</span>
         </div>
       )}
@@ -1746,10 +1866,12 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           <span className="text-sm font-medium text-neutral-400">
             DMD Studio · <span className="text-neutral-200">{ROLE_LABEL[role]}</span>
           </span>
-          {isRecordingActive && (
+          {(isRecordingActive || selfRecording) && (
             <span className="flex items-center gap-1.5 rounded-full bg-red-600/90 px-2.5 py-1 text-xs font-semibold">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-              {inCountdown ? `Starting in ${countdownSeconds}` : `REC ${formatElapsed(elapsed)}`}
+              {inCountdown
+                ? `Starting in ${countdownSeconds}`
+                : `REC ${formatElapsed(selfRecording && selfStartedAt ? now - selfStartedAt : elapsed)}`}
             </span>
           )}
         </div>
@@ -1793,7 +1915,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       )}
 
       <footer className="flex flex-col items-center gap-3">
-        {role === "host" && !isRecordingActive && notReadyPeers.length > 0 && (
+        {role === "host" && !isTutorial && !isRecordingActive && notReadyPeers.length > 0 && (
           <p className="px-4 text-center text-xs text-amber-400">
             Waiting for {notReadyPeers.map((p) => p.displayName || "a guest").join(", ")} to
             connect — recording now may miss their track.
@@ -1889,7 +2011,25 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             <Settings aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} />
           </ControlButton>
 
-          {role === "host" && (
+          {isTutorial && isRecordingParticipant && (
+            <button
+              onClick={selfRecording ? stopSelfRecording : () => void startSelfRecording()}
+              disabled={
+                recordingStatus === "finishing" || screenRecStatus === "finishing" || selfCountdown !== null
+              }
+              className={`flex h-11 items-center gap-2 rounded-full px-5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                selfRecording ? "bg-neutral-700 hover:bg-neutral-600" : "bg-red-600 hover:bg-red-500"
+              }`}
+            >
+              <span className={`h-2.5 w-2.5 rounded-full ${selfRecording ? "bg-red-500" : "bg-white"}`} />
+              {selfRecording
+                ? "Stop recording"
+                : selfCountdown !== null
+                  ? "Starting…"
+                  : "Record screen + camera"}
+            </button>
+          )}
+          {!isTutorial && role === "host" && (
             <button
               onClick={toggleRecording}
               disabled={recordingStatus === "finishing"}

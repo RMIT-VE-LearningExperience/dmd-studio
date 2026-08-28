@@ -822,6 +822,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
   const [recordings, setRecordings] = useState<RecordingDoc[]>([]);
   const [episodes, setEpisodes] = useState<EpisodeDoc[]>([]);
   const [isHost, setIsHost] = useState(false);
+  const [isTutorial, setIsTutorial] = useState(false);
 
   useEffect(
     () =>
@@ -865,14 +866,19 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,
           };
         })
-          .sort(
-            (a, b) =>
+          .sort((a, b) => {
+            if (isTutorial) {
+              if (a.take !== b.take) return b.take - a.take;
+              if (a.kind !== b.kind) return a.kind === "screen" ? -1 : 1;
+            }
+            return (
               (b.completedAt?.toMillis() ?? b.startedAtMs ?? 0) -
-              (a.completedAt?.toMillis() ?? a.startedAtMs ?? 0),
-          ),
+              (a.completedAt?.toMillis() ?? a.startedAtMs ?? 0)
+            );
+          }),
       );
     });
-  }, [user, id]);
+  }, [user, id, isTutorial]);
 
   useEffect(() => {
     if (!user) return;
@@ -900,7 +906,10 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
   useEffect(() => {
     if (!user) return;
     getDoc(doc(db, "sessions", id))
-      .then((snap) => setIsHost(snap.data()?.hostUid === user.uid))
+      .then((snap) => {
+        setIsHost(snap.data()?.hostUid === user.uid);
+        setIsTutorial(snap.data()?.kind === "tutorial");
+      })
       .catch(() => setIsHost(false));
   }, [user, id]);
 

@@ -128,6 +128,11 @@ export default function ProjectCard({ project, onScript }: Props) {
       </div>
       <div className="flex items-end justify-between gap-2 p-4">
         <div className="flex min-w-0 flex-col gap-0.5">
+          {project.kind === "tutorial" && (
+            <span className="w-fit rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold text-sky-300">
+              TUTORIAL
+            </span>
+          )}
           {project.live && (
             <span className="flex w-fit items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />

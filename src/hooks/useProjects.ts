@@ -20,9 +20,14 @@ export type ProjectPreview = {
   thumbnailUrl: string;
 };
 
+export type SessionKind = "podcast" | "tutorial";
+
 export type Project = {
   id: string;
   title: string;
+  // "podcast": host-driven synchronised takes (the original studio).
+  // "tutorial": each teacher records their own screen + camera on demand.
+  kind: SessionKind;
   createdAt: Timestamp | null;
   scheduledAt: Timestamp | null;
   durationMinutes: number | null;
@@ -34,6 +39,7 @@ export type Project = {
 
 export type CreateProjectInput = {
   title?: string;
+  kind?: SessionKind;
   scheduledAt?: Date;
   durationMinutes?: number;
 };
@@ -70,6 +76,7 @@ export function useProjects() {
         return {
           id: docSnap.id,
           title: (data.title as string) || "Untitled",
+          kind: data.kind === "tutorial" ? "tutorial" : "podcast",
           createdAt: (data.createdAt as Timestamp) ?? null,
           scheduledAt: (data.scheduledAt as Timestamp) ?? null,
           durationMinutes: (data.durationMinutes as number) ?? null,
@@ -111,6 +118,9 @@ export async function createProject(
   const ref = await addDoc(collection(db, "sessions"), {
     hostUid: user.uid,
     title: input.title?.trim() || "Untitled",
+    kind: input.kind ?? "podcast",
+    // A teacher recording a tutorial works alone — no host at the door.
+    ...(input.kind === "tutorial" ? { settings: { autoAdmit: true } } : {}),
     createdAt: serverTimestamp(),
     ...(input.scheduledAt ? { scheduledAt: Timestamp.fromDate(input.scheduledAt) } : {}),
     ...(durationMinutes ? { durationMinutes } : {}),
