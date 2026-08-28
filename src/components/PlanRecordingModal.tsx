@@ -181,11 +181,11 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 disabled={!!createdId}
-                className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                className="w-full min-w-0 rounded-lg border border-neutral-700 bg-neutral-900 py-2 pl-3 pr-8 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
               />
             </label>
 
-            <div className="grid gap-3 sm:grid-cols-[1fr_11rem_9rem]">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)_minmax(0,10rem)]">
               <label className="flex flex-col gap-1.5">
                 <span className="text-xs font-medium text-neutral-500">Date</span>
                 <input
@@ -193,7 +193,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                   value={scheduledDate}
                   onChange={(e) => setScheduledDate(e.target.value)}
                   disabled={!!createdId}
-                  className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                  className="w-full min-w-0 rounded-lg border border-neutral-700 bg-neutral-900 py-2 pl-3 pr-8 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
                 />
               </label>
 
@@ -203,7 +203,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                   value={scheduledTime}
                   onChange={(e) => setScheduledTime(e.target.value)}
                   disabled={!!createdId}
-                  className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                  className="w-full min-w-0 rounded-lg border border-neutral-700 bg-neutral-900 py-2 pl-3 pr-8 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
                 >
                   {TIME_OPTIONS.map((time) => (
                     <option key={time} value={time}>
@@ -219,7 +219,7 @@ export default function PlanRecordingModal({ user, initialDate, onClose }: Props
                   value={durationMinutes}
                   onChange={(e) => setDurationMinutes(Number(e.target.value))}
                   disabled={!!createdId}
-                  className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
+                  className="w-full min-w-0 rounded-lg border border-neutral-700 bg-neutral-900 py-2 pl-3 pr-8 text-sm outline-none transition focus:border-indigo-500 disabled:opacity-60"
                 >
                   {[30, 45, 60, 75, 90, 120, 180].map((minutes) => (
                     <option key={minutes} value={minutes}>
