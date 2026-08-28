@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   addDoc,
+  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -1103,6 +1104,41 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     setSelfStartedAt(null);
   };
 
+  // ---- Chapter markers -----------------------------------------------------
+  // A timestamp dropped mid-take (button or the M key) lands on this
+  // participant's camera recording doc; the recordings page turns them into
+  // jump points and a copyable list for the editors.
+  const addMarker = () => {
+    if (recordingStatus !== "recording") return;
+    const atMs = isTutorial
+      ? selfStartedAt
+        ? Date.now() - selfStartedAt
+        : 0
+      : elapsed;
+    const take = isTutorial ? selfTakeRef.current : (recordingFlag?.take ?? 0);
+    if (!take) return;
+    void setDoc(
+      doc(db, "sessions", sessionId, "recordings", `${uid}_take${take}`),
+      { markers: arrayUnion({ atMs: Math.round(atMs), addedAt: Date.now() }) },
+      { merge: true },
+    ).catch(() => {});
+    pushToast(`Marker at ${formatElapsed(atMs)}`, "success");
+  };
+  const addMarkerRef = useRef(addMarker);
+  useEffect(() => {
+    addMarkerRef.current = addMarker;
+  });
+  useEffect(() => {
+    if (!joined) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (e.key === "m" || e.key === "M") addMarkerRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [joined]);
+
 
   // Ticker driving both the countdown overlay and the REC timer — everything
   // is derived at render from the shared startedAt timestamp, so every
@@ -2096,6 +2132,16 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
             >
               <span className={`h-2.5 w-2.5 rounded-full ${isRecordingActive ? "bg-red-500" : "bg-white"}`} />
               {isRecordingActive ? (inCountdown ? "Cancel" : "Stop recording") : "Record"}
+            </button>
+          )}
+
+          {isRecordingParticipant && recordingStatus === "recording" && (
+            <button
+              onClick={addMarker}
+              title="Drop a chapter marker at this moment (or press M)"
+              className="flex h-11 items-center gap-1.5 rounded-full border border-amber-500/60 px-4 text-sm font-semibold text-amber-300 transition hover:bg-amber-500/10"
+            >
+              <span className="text-base leading-none">⚑</span> Marker
             </button>
           )}
 

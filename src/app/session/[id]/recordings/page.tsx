@@ -49,6 +49,7 @@ type RecordingDoc = {
   audioPath: string | null;
   transcript: string | null;
   transcriptStatus: "pending" | "done" | "error" | null;
+  markers: { atMs: number }[];
 };
 
 type FullFetchState =
@@ -136,6 +137,65 @@ function TakeTitle({ rec }: { rec: RecordingDoc }) {
   );
 }
 
+function formatTimecode(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+// Markers are written to the camera doc during the take; every track of
+// that take (same person, same take number) shares them.
+function markersForTake(all: RecordingDoc[], rec: RecordingDoc) {
+  const merged = all
+    .filter((r) => r.uid === rec.uid && r.take === rec.take)
+    .flatMap((r) => r.markers);
+  const seen = new Set<number>();
+  return merged
+    .filter((m) => (seen.has(m.atMs) ? false : (seen.add(m.atMs), true)))
+    .sort((a, b) => a.atMs - b.atMs);
+}
+
+function MarkersPanel({
+  markers,
+  onSeek,
+}: {
+  markers: { atMs: number }[];
+  onSeek?: (ms: number) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  if (markers.length === 0) return null;
+  const copy = async () => {
+    await navigator.clipboard.writeText(
+      markers.map((m, i) => `${formatTimecode(m.atMs)}  Marker ${i + 1}`).join("\n"),
+    );
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-medium text-neutral-500">Markers</span>
+      {markers.map((m, i) => (
+        <button
+          key={`${m.atMs}-${i}`}
+          onClick={() => onSeek?.(m.atMs)}
+          title="Jump to this marker"
+          className="rounded-full border border-amber-500/40 px-2.5 py-0.5 font-mono text-[11px] text-amber-300 transition hover:bg-amber-500/10"
+        >
+          ⚑ {formatTimecode(m.atMs)}
+        </button>
+      ))}
+      <button
+        onClick={copy}
+        className="rounded-full border border-neutral-700 px-2.5 py-0.5 text-[11px] text-neutral-400 transition hover:border-neutral-500"
+      >
+        {copied ? "Copied" : "Copy timecodes"}
+      </button>
+    </div>
+  );
+}
+
 // Rules allow the host (or the track's owner) to write; anyone else gets a
 // clear error instead of a silent failure.
 async function renameTake(sessionId: string, rec: RecordingDoc) {
@@ -147,6 +207,39 @@ async function renameTake(sessionId: string, rec: RecordingDoc) {
     });
   } catch {
     window.alert("Couldn't rename this take — only the host or the person who recorded it can.");
+  }
+}
+
+// Tutorial takes: one group per person+take, newest first (rows arrive
+// already ordered screen-before-camera within a take).
+function groupTakes(recordings: RecordingDoc[]) {
+  const groups = new Map<string, { key: string; label: string; rows: RecordingDoc[] }>();
+  for (const rec of recordings) {
+    const key = `${rec.uid}_${rec.take}`;
+    if (!groups.has(key)) {
+      const when = formatDate(rec.completedAt);
+      groups.set(key, {
+        key,
+        label: `${rec.displayName || rec.role} · Take ${rec.take}${when ? ` · ${when}` : ""}`,
+        rows: [],
+      });
+    }
+    groups.get(key)!.rows.push(rec);
+  }
+  return [...groups.values()];
+}
+
+// Staggered so each anchor click registers as its own download; Chrome asks
+// once to allow multiple downloads from the site.
+async function downloadAll(rows: RecordingDoc[]) {
+  const finished = rows.filter((r) => r.composedPath);
+  for (const [i, rec] of finished.entries()) {
+    const suffix = rec.kind === "screen" ? "screen" : "camera";
+    await downloadStoragePath(
+      rec.composedPath!,
+      `${rec.displayName || rec.role}-take${rec.take}-${suffix}.${rec.extension}`,
+    );
+    if (i < finished.length - 1) await new Promise((r) => setTimeout(r, 700));
   }
 }
 
@@ -482,7 +575,16 @@ function TranscriptPanel({ rec }: { rec: RecordingDoc }) {
 
 // Once the Cloud Function has composed the take into a single file, playback
 // is just streaming that file — no client-side stitching or full download.
-function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc }) {
+function ComposedRecordingRow({
+  sessionId,
+  rec,
+  markers,
+}: {
+  sessionId: string;
+  rec: RecordingDoc;
+  markers: { atMs: number }[];
+}) {
+  const playerRef = useRef<HTMLVideoElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -640,7 +742,16 @@ function ComposedRecordingRow({ sessionId, rec }: { sessionId: string; rec: Reco
         <p className="text-xs text-red-400">Couldn&rsquo;t load this recording — refresh to try again.</p>
       ) : streamUrl ? (
         <>
-          <video src={streamUrl} controls playsInline className="w-full rounded-xl bg-black" />
+          <video ref={playerRef} src={streamUrl} controls playsInline className="w-full rounded-xl bg-black" />
+          <MarkersPanel
+            markers={markers}
+            onSeek={(ms) => {
+              const v = playerRef.current;
+              if (!v) return;
+              v.currentTime = ms / 1000;
+              void v.play().catch(() => {});
+            }}
+          />
           {!rec.previewPath && (
             <p className="text-xs text-neutral-500">
               Preparing an optimised preview — playing the full-quality original meanwhile, which may
@@ -864,6 +975,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             audioPath: (data.audioPath as string) ?? null,
             transcript: (data.transcript as string) ?? null,
             transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,
+            markers: ((data.markers as { atMs: number }[] | undefined) ?? []).slice().sort((a, b) => a.atMs - b.atMs),
           };
         })
           .sort((a, b) => {
@@ -997,13 +1109,38 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
           </p>
         ) : (
           <div className="flex flex-col gap-4">
-            {recordings.map((rec) =>
-              rec.uploadState !== "complete" && !rec.composedPath ? (
-                <InProgressRow key={rec.id} sessionId={id} rec={rec} isHost={isHost} />
-              ) : rec.composedPath ? (
-                <ComposedRecordingRow key={rec.id} sessionId={id} rec={rec} />
-              ) : (
-                <RecordingRow key={rec.id} sessionId={id} rec={rec} />
+            {(isTutorial ? groupTakes(recordings) : [{ key: "all", label: null, rows: recordings }]).map(
+              (group) => (
+                <div key={group.key} className="flex flex-col gap-4">
+                  {group.label && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 pb-2">
+                      <p className="text-sm font-semibold text-neutral-200">{group.label}</p>
+                      {group.rows.filter((r) => r.composedPath).length > 1 && (
+                        <button
+                          onClick={() => downloadAll(group.rows)}
+                          title="Downloads every finished track of this take (your browser may ask to allow multiple downloads)"
+                          className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+                        >
+                          Download all ({group.rows.filter((r) => r.composedPath).length} files)
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {group.rows.map((rec) =>
+                    rec.uploadState !== "complete" && !rec.composedPath ? (
+                      <InProgressRow key={rec.id} sessionId={id} rec={rec} isHost={isHost} />
+                    ) : rec.composedPath ? (
+                      <ComposedRecordingRow
+                        key={rec.id}
+                        sessionId={id}
+                        rec={rec}
+                        markers={markersForTake(recordings, rec)}
+                      />
+                    ) : (
+                      <RecordingRow key={rec.id} sessionId={id} rec={rec} />
+                    ),
+                  )}
+                </div>
               ),
             )}
           </div>
