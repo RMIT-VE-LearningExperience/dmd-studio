@@ -1110,11 +1110,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   // jump points and a copyable list for the editors.
   const addMarker = () => {
     if (recordingStatus !== "recording") return;
+    // (Computed inline rather than via `elapsed`, which is declared further
+    // down — the compiler lint rejects reading it from up here.)
     const atMs = isTutorial
       ? selfStartedAt
         ? Date.now() - selfStartedAt
         : 0
-      : elapsed;
+      : recordingFlag?.startedAt
+        ? Math.max(0, now - (recordingFlag.startedAt.toMillis() + COUNTDOWN_MS))
+        : 0;
     const take = isTutorial ? selfTakeRef.current : (recordingFlag?.take ?? 0);
     if (!take) return;
     void setDoc(
