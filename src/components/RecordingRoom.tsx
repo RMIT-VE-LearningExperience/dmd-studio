@@ -232,6 +232,8 @@ function VideoTile({
   cameraOff,
   personName,
   className,
+  onClick,
+  hint,
 }: {
   stream: MediaStream | null;
   muted: boolean;
@@ -246,6 +248,8 @@ function VideoTile({
   cameraOff?: boolean;
   personName?: string;
   className?: string;
+  onClick?: () => void;
+  hint?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useIsSpeaking(stream, !!highlightSpeaking);
@@ -266,7 +270,9 @@ function VideoTile({
 
   return (
     <div
-      className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${className ?? ""} ${
+      onClick={onClick}
+      title={hint}
+      className={`relative aspect-video overflow-hidden rounded-2xl border bg-black transition-shadow duration-150 ${onClick ? "cursor-pointer" : ""} ${className ?? ""} ${
         speaking
           ? "border-emerald-400 shadow-[0_0_0_4px_rgba(16,185,129,0.72),0_0_28px_rgba(16,185,129,0.3)]"
           : failed
@@ -321,7 +327,11 @@ function VideoTile({
           </span>
         </div>
       )}
-      {actions && <div className="absolute left-3 top-3 flex gap-1.5">{actions}</div>}
+      {actions && (
+        <div className="absolute left-3 top-3 flex gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {actions}
+        </div>
+      )}
       {!stream && (
         <span className="absolute inset-0 flex items-center justify-center text-sm text-neutral-600">
           Waiting…
@@ -703,6 +713,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [selfCountdown, setSelfCountdown] = useState<number | null>(null);
   const [selfStartedAt, setSelfStartedAt] = useState<number | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  // Spotlight layout: click a tile to make it the main view with the rest in
+  // a sidebar; click it again (or "Equal layout") to go back to the grid.
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const mixerRef = useRef<{ track: MediaStreamTrack; close: () => void } | null>(null);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [cameras, setCameras] = useState<MediaDeviceChoice[]>([]);
@@ -1561,6 +1574,23 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const tileCount = 1 + peers.length + screenPeers.length + (localScreenStream ? 1 : 0);
   const gridColsClass = tileCount > 2 ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2";
   const isRecordingActive = recordingFlag?.active ?? false;
+  const tileIds = new Set([
+    "me",
+    ...(localScreenStream ? ["me-screen"] : []),
+    ...peers.map((p) => p.uid),
+    ...screenPeers.map((sp) => `screen-${sp.uid}`),
+  ]);
+  const activeFocus = focusedId && tileIds.has(focusedId) && !prompterOpen ? focusedId : null;
+  const toggleFocus = (id: string) => setFocusedId((cur) => (cur === id ? null : id));
+  const focusClass = (id: string, base?: string) =>
+    !activeFocus
+      ? base
+      : activeFocus === id
+        ? "lg:col-start-1 lg:row-start-1 lg:row-span-[12]"
+        : "lg:col-start-2";
+  const focusHint = (id: string) =>
+    activeFocus === id ? "Click to restore the equal layout" : "Click to enlarge";
+
   const callTiles = (
     <>
       {isTutorial && (
@@ -1568,11 +1598,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       {localScreenStream && (
         <VideoTile
           stream={localScreenStream}
+          onClick={() => toggleFocus("me-screen")}
+          hint={focusHint("me-screen")}
           muted
           speakerId={speakerId}
           label={`${name} (Your screen)`}
           badge={screenRecStatus === "recording" ? "REC" : undefined}
-          className={isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined}
+          className={focusClass("me-screen", isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined)}
         />
       )}
         </>
@@ -1581,6 +1613,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         stream={localStream}
         muted
         mirrored
+        onClick={() => toggleFocus("me")}
+        hint={focusHint("me")}
+        className={focusClass("me")}
         highlightSpeaking
         speakerId={speakerId}
         cameraOff={!camOn}
@@ -1594,11 +1629,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       {localScreenStream && (
         <VideoTile
           stream={localScreenStream}
+          onClick={() => toggleFocus("me-screen")}
+          hint={focusHint("me-screen")}
           muted
           speakerId={speakerId}
           label={`${name} (Your screen)`}
           badge={screenRecStatus === "recording" ? "REC" : undefined}
-          className={isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined}
+          className={focusClass("me-screen", isTutorial ? "sm:col-span-2 lg:col-span-3" : undefined)}
         />
       )}
         </>
@@ -1608,6 +1645,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
         <VideoTile
           key={peer.uid}
           stream={peer.stream}
+          onClick={() => toggleFocus(peer.uid)}
+          hint={focusHint(peer.uid)}
+          className={focusClass(peer.uid)}
           muted={false}
           highlightSpeaking
           speakerId={speakerId}
@@ -1658,6 +1698,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       {screenPeers.map((sp) => (
         <VideoTile
           key={`screen-${sp.uid}`}
+          onClick={() => toggleFocus(`screen-${sp.uid}`)}
+          hint={focusHint(`screen-${sp.uid}`)}
+          className={focusClass(`screen-${sp.uid}`)}
           stream={sp.stream}
           muted
           speakerId={speakerId}
@@ -1890,6 +1933,14 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           >
             Settings
           </button>
+          {activeFocus && (
+            <button
+              onClick={() => setFocusedId(null)}
+              className="rounded-full border border-neutral-700 px-3 py-1 text-xs font-medium text-neutral-300 transition hover:border-neutral-500"
+            >
+              Equal layout
+            </button>
+          )}
           <span className="rounded-full bg-neutral-800 px-3 py-1 text-xs font-medium text-neutral-400">
             {peers.length + 1} in the studio
           </span>
@@ -1911,7 +1962,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           </div>
         </div>
       ) : (
-        <div className={`grid flex-1 grid-cols-1 gap-4 ${gridColsClass}`}>{callTiles}</div>
+        <div
+          className={`grid flex-1 grid-cols-1 gap-4 ${
+            activeFocus ? "lg:grid-cols-[minmax(0,3fr)_minmax(0,1fr)] lg:auto-rows-min" : gridColsClass
+          }`}
+        >
+          {callTiles}
+        </div>
       )}
 
       <footer className="flex flex-col items-center gap-3">
