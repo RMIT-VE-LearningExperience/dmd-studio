@@ -694,6 +694,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const [joined, setJoined] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [mutedTalking, setMutedTalking] = useState(false);
   const rawStreamRef = useRef<MediaStream | null>(null);
   const pipelineRef = useRef<BlurPipeline | null>(null);
   const [blurOn, setBlurOn] = useState(false);
@@ -1444,6 +1445,69 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
     }
   };
 
+  // While muted, listen to a CLONE of the mic track — the live track is
+  // silenced (enabled = false), but a clone is an independent handle on the
+  // same source and keeps producing audio — and nudge the participant when
+  // they appear to be talking into a dead mic. A little sterner than the
+  // tile detector: sustained voice, not a cough or a keyboard.
+  useEffect(() => {
+    if (!joined || micOn) return;
+    const sourceTrack = localStream?.getAudioTracks()[0];
+    if (!sourceTrack || sourceTrack.readyState !== "live") return;
+
+    const probe = sourceTrack.clone();
+    probe.enabled = true;
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext();
+    } catch {
+      probe.stop();
+      return;
+    }
+    const source = ctx.createMediaStreamSource(new MediaStream([probe]));
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Float32Array(analyser.fftSize);
+    void ctx.resume().catch(() => {});
+
+    const THRESHOLD = 0.02;
+    const TRIGGER_MS = 600; // this much accumulated voice trips the nudge
+    const COOLDOWN_MS = 15000; // then stay quiet a while before re-nudging
+    let voicedMs = 0;
+    let cooldownUntil = 0;
+    let last = performance.now();
+    const timer = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / data.length);
+      const now = performance.now();
+      const dt = now - last;
+      last = now;
+      voicedMs = rms > THRESHOLD ? Math.min(1500, voicedMs + dt) : Math.max(0, voicedMs - dt * 2);
+      if (voicedMs >= TRIGGER_MS && now >= cooldownUntil) {
+        cooldownUntil = now + COOLDOWN_MS;
+        voicedMs = 0;
+        setMutedTalking(true);
+      }
+    }, 120);
+
+    return () => {
+      window.clearInterval(timer);
+      source.disconnect();
+      void ctx.close().catch(() => {});
+      probe.stop();
+    };
+  }, [joined, micOn, localStream]);
+
+  // The nudge dismisses itself; unmuting hides it instantly (render guard).
+  useEffect(() => {
+    if (!mutedTalking) return;
+    const t = window.setTimeout(() => setMutedTalking(false), 6000);
+    return () => window.clearTimeout(t);
+  }, [mutedTalking]);
+
   const toggleMic = () => {
     const next = !micOn;
     localStreamRef.current?.getAudioTracks().forEach((t) => {
@@ -1808,6 +1872,21 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
           onSend={sendChat}
           onClose={() => setChatOpen(false)}
         />
+      )}
+      {joined && mutedTalking && !micOn && !unmutePrompt && (
+        <div className="fixed bottom-32 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-amber-400/70 bg-amber-950/90 py-2 pl-4 pr-2 text-sm font-medium text-amber-100 shadow-2xl backdrop-blur">
+          <MicOff aria-hidden="true" className="h-4 w-4 shrink-0 text-amber-300" strokeWidth={1.9} />
+          <span className="whitespace-nowrap">You&rsquo;re talking, but your mic is muted</span>
+          <button
+            onClick={() => {
+              toggleMic();
+              setMutedTalking(false);
+            }}
+            className="rounded-full bg-emerald-500 px-4 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-400"
+          >
+            Unmute
+          </button>
+        </div>
       )}
       {unmutePrompt && !micOn && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
