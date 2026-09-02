@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, serverTimestamp, updateDoc, Timestamp } from "firebase/firestore";
-import { CalendarDays, FileText, FolderOpen, Mail, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
+import { CalendarDays, FileText, FolderOpen, Headphones, Mail, MoreHorizontal, Pencil, Trash2, Video } from "lucide-react";
 import { db } from "@/lib/firebase";
 import type { Project } from "@/hooks/useProjects";
 import InvitesModal from "@/components/InvitesModal";
@@ -284,6 +284,18 @@ export default function ProjectCard({ project, onScript }: Props) {
               >
                 <Pencil aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
                 Rename
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  router.push(`/session/${project.id}?role=producer`);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-neutral-300 transition hover:bg-neutral-800 hover:text-white"
+              >
+                <Headphones aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
+                Join as producer
               </button>
               <button
                 type="button"

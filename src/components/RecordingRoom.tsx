@@ -1245,6 +1245,15 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       setJoined(true);
       return;
     }
+    // The session owner joining as a producer skips the queue — nobody is
+    // on the other side of their own waiting room to let them in.
+    if (sessionSnap.data()?.hostUid === uid) {
+      await setDoc(participantRef, { admission: "admitted", role }, { merge: true });
+      await join(stream, chosenName);
+      await setDoc(participantRef, { muted: startMuted, camOff: options.startCamOff }, { merge: true });
+      setJoined(true);
+      return;
+    }
     const autoAdmit = sessionSnap.data()?.settings?.autoAdmit === true;
     if (autoAdmit && existing.data()?.admission !== "denied") {
       try {
