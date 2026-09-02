@@ -942,6 +942,7 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
   const [recordings, setRecordings] = useState<RecordingDoc[]>([]);
   const [episodes, setEpisodes] = useState<EpisodeDoc[]>([]);
   const [isHost, setIsHost] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [isTutorial, setIsTutorial] = useState(false);
 
   useEffect(
@@ -1021,6 +1022,15 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
       );
     });
   }, [user, id]);
+
+  // Admins (the DMD team) may delete anyone's takes — mirror the rules'
+  // /admins check so the buttons appear for them.
+  useEffect(() => {
+    if (!user?.email) return;
+    getDoc(doc(db, "admins", user.email.toLowerCase()))
+      .then((snap) => setIsAdmin(snap.exists()))
+      .catch(() => {});
+  }, [user]);
 
   // Only the host can request episodes (enforced by rules too) — hide the
   // button from guests viewing the page.
@@ -1144,14 +1154,14 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
                         sessionId={id}
                         rec={rec}
                         markers={markersForTake(recordings, rec)}
-                        canDelete={isHost || rec.uid === user?.uid}
+                        canDelete={isHost || isAdmin || rec.uid === user?.uid}
                       />
                     ) : (
                       <RecordingRow
                         key={rec.id}
                         sessionId={id}
                         rec={rec}
-                        canDelete={isHost || rec.uid === user?.uid}
+                        canDelete={isHost || isAdmin || rec.uid === user?.uid}
                       />
                     ),
                   )}

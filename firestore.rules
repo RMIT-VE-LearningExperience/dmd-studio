@@ -2,6 +2,26 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Studio admins (the DMD team), keyed by their verified Google email.
+    // Admins may read and delete any recording in any session — the client
+    // hides the controls from everyone else. Anonymous guests carry no
+    // email, so they can never match.
+    function isAdmin() {
+      return request.auth != null
+        && 'email' in request.auth.token
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email));
+    }
+
+    match /admins/{email} {
+      // Anyone may check their own admin status; only admins see or edit
+      // the roster itself.
+      allow get: if isAdmin() || (request.auth != null
+        && 'email' in request.auth.token
+        && request.auth.token.email == email);
+      allow list, write: if isAdmin();
+    }
+
     match /sessions/{sessionId} {
       // The session owner — used to gate destructive operations.
       function isSessionHost() {
@@ -178,11 +198,11 @@ service cloud.firestore {
         // These docs carry transcripts — reads are room-members only.
         // The host may also update — that's how a dead participant's
         // partial track gets finalized (uploadState flipped to "complete").
-        allow read: if isSessionHost() || isAdmitted();
+        allow read: if isSessionHost() || isAdmitted() || isAdmin();
         allow create, update: if isSessionHost()
           || (request.auth != null
               && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
-        allow delete: if isSessionHost()
+        allow delete: if isSessionHost() || isAdmin()
           || (request.auth != null && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
       }
     }
