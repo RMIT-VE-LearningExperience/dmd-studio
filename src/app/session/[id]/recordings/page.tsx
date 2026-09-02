@@ -579,10 +579,15 @@ function ComposedRecordingRow({
   sessionId,
   rec,
   markers,
+  canDelete,
 }: {
   sessionId: string;
   rec: RecordingDoc;
   markers: { atMs: number }[];
+  // Storage/Firestore rules only let the host or the recorder delete a
+  // take — don't offer the button to viewers who'd just get a permission
+  // error alert.
+  canDelete: boolean;
 }) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
@@ -727,14 +732,16 @@ function ComposedRecordingRow({
               </>
             )}
           </div>
-          <button
-            onClick={remove}
-            disabled={deleting || downloading}
-            title="Delete recording"
-            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
+          {canDelete && (
+            <button
+              onClick={remove}
+              disabled={deleting || downloading}
+              title="Delete recording"
+              className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -770,7 +777,7 @@ function ComposedRecordingRow({
   );
 }
 
-function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc }) {
+function RecordingRow({ sessionId, rec, canDelete }: { sessionId: string; rec: RecordingDoc; canDelete: boolean }) {
   const [full, setFull] = useState<FullFetchState>({ phase: "idle" });
   const [deleting, setDeleting] = useState(false);
   const autoLoadedRef = useRef(false);
@@ -883,14 +890,16 @@ function RecordingRow({ sessionId, rec }: { sessionId: string; rec: RecordingDoc
           >
             Download
           </button>
-          <button
-            onClick={remove}
-            disabled={deleting || full.phase === "fetching"}
-            title="Delete recording"
-            className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
+          {canDelete && (
+            <button
+              onClick={remove}
+              disabled={deleting || full.phase === "fetching"}
+              title="Delete recording"
+              className="rounded-full border border-neutral-700 px-4 py-1.5 text-xs font-medium text-neutral-400 transition hover:border-red-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1135,9 +1144,15 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
                         sessionId={id}
                         rec={rec}
                         markers={markersForTake(recordings, rec)}
+                        canDelete={isHost || rec.uid === user?.uid}
                       />
                     ) : (
-                      <RecordingRow key={rec.id} sessionId={id} rec={rec} />
+                      <RecordingRow
+                        key={rec.id}
+                        sessionId={id}
+                        rec={rec}
+                        canDelete={isHost || rec.uid === user?.uid}
+                      />
                     ),
                   )}
                 </div>
