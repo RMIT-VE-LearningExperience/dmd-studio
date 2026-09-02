@@ -43,6 +43,14 @@ service cloud.firestore {
               && exists(/databases/$(database)/documents/sessions/$(sessionId)/invites/$(request.resource.data.inviteKey)));
       }
 
+      // A signed-in (non-anonymous) account joining as producer — the team
+      // logs in, guests never do — may let themselves in without waiting
+      // for admission. Producers are never recorded.
+      function signedInProducer() {
+        return request.auth.token.firebase.sign_in_provider != 'anonymous'
+          && request.resource.data.get('role', '') == 'producer';
+      }
+
       // An admitted producer — allowed to rename other participants, but
       // nothing else that isSessionHost() alone would otherwise gate.
       function isAdmittedProducer() {
@@ -85,7 +93,9 @@ service cloud.firestore {
         // (unless the host turned auto-admit on) and never self-deny.
         allow create: if request.auth != null && request.auth.uid == uid
           && request.resource.data.get('admission', 'pending') != 'denied'
-          && (request.resource.data.get('admission', 'pending') != 'admitted' || autoAdmitOn())
+          && (request.resource.data.get('admission', 'pending') != 'admitted'
+              || autoAdmitOn()
+              || signedInProducer())
           && guestInviteOk();
         // …and later self-updates may only leave admission untouched, knock
         // again ('pending'), or self-admit under auto-admit — but a denied
@@ -96,7 +106,10 @@ service cloud.firestore {
               || (request.resource.data.get('admission', '') == 'admitted'
                   && autoAdmitOn()
                   && resource.data.get('admission', '') != 'denied'
-                  && guestInviteOk()));
+                  && guestInviteOk())
+              || (request.resource.data.get('admission', '') == 'admitted'
+                  && signedInProducer()
+                  && resource.data.get('admission', '') != 'denied'));
         // A producer may rename someone else, but touch nothing else on
         // their doc — can't use this to admit, deny, or mute.
         allow update: if isAdmittedProducer()

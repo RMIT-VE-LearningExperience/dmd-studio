@@ -382,7 +382,7 @@ export default function Teleprompter({
           ? // Height must be bounded by the viewport, not the parent (which
             // grows with content) — an unbounded panel fits the whole script,
             // leaving nothing to clip and therefore nothing to scroll.
-            "flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
+            "flex h-[calc(100vh-23rem)] min-h-[16rem] flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
           : `fixed z-50 flex max-h-[55vh] w-[min(calc(100vw-2rem),42rem)] flex-col overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-950/95 shadow-2xl backdrop-blur ${
               position ? "" : "left-1/2 top-14 -translate-x-1/2"
             }`

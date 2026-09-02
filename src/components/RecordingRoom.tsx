@@ -28,7 +28,7 @@ import {
   serverTimestamp,
   Timestamp,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import { useWebRTCMesh, type ParticipantRole, type RemotePeer } from "@/hooks/useWebRTCMesh";
 import { useLocalRecorder } from "@/hooks/useLocalRecorder";
 import {
@@ -1245,9 +1245,13 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       setJoined(true);
       return;
     }
-    // The session owner joining as a producer skips the queue — nobody is
-    // on the other side of their own waiting room to let them in.
-    if (sessionSnap.data()?.hostUid === uid) {
+    // The session owner skips the queue (nobody is on the other side of
+    // their own waiting room), and so does any signed-in — not anonymous —
+    // account joining as producer: the team logs in, guests never do, and
+    // producers are never recorded.
+    const isOwner = sessionSnap.data()?.hostUid === uid;
+    const signedInProducer = role === "producer" && auth.currentUser?.isAnonymous === false;
+    if (isOwner || (signedInProducer && existing.data()?.admission !== "denied")) {
       await setDoc(participantRef, { admission: "admitted", role }, { merge: true });
       await join(stream, chosenName);
       await setDoc(participantRef, { muted: startMuted, camOff: options.startCamOff }, { merge: true });
@@ -1661,7 +1665,9 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const toggleFocus = (id: string) => setFocusedId((cur) => (cur === id ? null : id));
   const focusClass = (id: string, base?: string) =>
     !activeFocus
-      ? base
+      ? prompterOpen
+        ? undefined
+        : base
       : activeFocus === id
         ? "lg:col-start-1 lg:row-start-1 lg:row-span-[12]"
         : "lg:col-start-2";
@@ -2025,16 +2031,20 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
       </header>
 
       {prompterOpen ? (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <Teleprompter
-            sessionId={sessionId}
-            uid={uid}
-            role={role}
-            recordingActive={isRecordingActive && !inCountdown}
-            onClose={() => setPrompterOpen(false)}
-            mode="embedded"
-          />
-          <div className="grid max-h-[calc(100vh-14rem)] grid-cols-2 gap-3 overflow-y-auto lg:grid-cols-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          {/* Centered, top of the stage: reading the script keeps the eyes
+              near the camera instead of dragging them off to a side panel. */}
+          <div className="mx-auto w-full max-w-4xl">
+            <Teleprompter
+              sessionId={sessionId}
+              uid={uid}
+              role={role}
+              recordingActive={isRecordingActive && !inCountdown}
+              onClose={() => setPrompterOpen(false)}
+              mode="embedded"
+            />
+          </div>
+          <div className="mx-auto grid w-fit max-w-full grid-flow-col auto-cols-[13rem] gap-3 overflow-x-auto pb-1">
             {callTiles}
           </div>
         </div>
