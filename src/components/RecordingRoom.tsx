@@ -38,6 +38,7 @@ import {
   type CaptureSettings,
   type MediaDeviceChoice,
   mixAudioTracks,
+  TARGET_FPS,
 } from "@/lib/media";
 import { resumePendingUploads, hasPendingUploads } from "@/lib/resumeUploads";
 import { recallInvite, type Invite } from "@/lib/invites";
@@ -1014,7 +1015,7 @@ export default function RecordingRoom({ sessionId, role, uid, displayName }: Pro
   const acquireScreen = async (): Promise<MediaStream | null> => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: isTutorial ? 30 : 15 } },
+        video: { frameRate: { ideal: isTutorial ? TARGET_FPS : 15 } },
         audio: isTutorial,
       });
       // The browser's own "Stop sharing" bar bypasses our button.

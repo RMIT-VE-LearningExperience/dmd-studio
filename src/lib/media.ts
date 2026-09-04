@@ -8,6 +8,10 @@ export type CaptureSettings = {
   autoAdmit?: boolean;
 };
 
+// PAL region: ask cameras for 25fps so the conformed 25fps exports keep
+// (nearly) every captured frame instead of dropping one in six from 30.
+export const TARGET_FPS = 25;
+
 // `ideal` constraints never throw — the browser just returns the closest
 // resolution the camera actually supports, so asking for 4K here safely
 // degrades to whatever the device can do (720p webcam, etc).
@@ -39,7 +43,7 @@ export async function getBestUserMedia(
         // (e.g. 1080x1920) as the "closest" match to the width/height ideals
         // above — forcing 16:9 keeps the picked mode landscape.
         aspectRatio: { ideal: 16 / 9 },
-        frameRate: { ideal: 30 },
+        frameRate: { ideal: TARGET_FPS },
       },
       audio,
     });

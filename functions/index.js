@@ -15,6 +15,9 @@ const os = require("node:os");
 initializeApp();
 
 const BUCKET = "dmd-studio-recordings";
+// PAL deliverables: every conformed output (preview, edit-ready, episode)
+// is 25fps so files drop straight onto the editors' Australian timelines.
+const TARGET_FPS = 25;
 // GCS compose accepts at most 32 source objects per call; longer recordings
 // are composed in batches, then the batches composed again.
 const COMPOSE_LIMIT = 32;
@@ -442,7 +445,7 @@ exports.produceEpisode = onDocumentCreated(
         if (tracks[i].audioOnly) {
           // Audio-only takes get a plain dark tile as their video.
           args = [
-            "-f", "lavfi", "-i", `color=c=0x27272a:s=${tw}x${th}:r=30`,
+            "-f", "lavfi", "-i", `color=c=0x27272a:s=${tw}x${th}:r=${TARGET_FPS}`,
             "-i", "pipe:0",
             "-shortest",
             "-map", "0:v", "-map", "1:a",
@@ -452,7 +455,7 @@ exports.produceEpisode = onDocumentCreated(
           ];
         } else {
           const vf =
-            `fps=30,scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
+            `fps=${TARGET_FPS},scale=${tw}:${th}:force_original_aspect_ratio=decrease,` +
             `pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` +
             (off > 0 ? `,tpad=start_duration=${off.toFixed(3)}:start_mode=add:color=black` : "");
           // Screen tracks are video-only — give them silent audio so the
@@ -479,7 +482,7 @@ exports.produceEpisode = onDocumentCreated(
       } else {
         // Pass 2 — overlay the tiles onto a black canvas and mix audio.
         const layout = tileLayout(n);
-        let filter = `color=black:s=${CANVAS_W}x${CANVAS_H}:d=${total.toFixed(3)}[base]`;
+        let filter = `color=black:s=${CANVAS_W}x${CANVAS_H}:r=${TARGET_FPS}:d=${total.toFixed(3)}[base]`;
         let prev = "base";
         for (let i = 0; i < n; i++) {
           const out = i === n - 1 ? "vout" : `v${i}`;
@@ -492,6 +495,7 @@ exports.produceEpisode = onDocumentCreated(
           ...tilePaths.flatMap((p) => ["-i", p]),
           "-filter_complex", filter,
           "-map", "[vout]", "-map", "[aout]",
+          "-r", String(TARGET_FPS),
           "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
           "-c:a", "aac", "-b:a", "192k",
           "-movflags", "+faststart",
@@ -693,7 +697,7 @@ exports.makePreview = onDocumentUpdated(
           "-i", "pipe:0",
           // Cap at 720p (never upscale), even width for yuv420p.
           "-vf", "scale=-2:'min(720,ih)',format=yuv420p",
-          "-r", "30",
+          "-r", String(TARGET_FPS),
           "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
           "-c:a", "aac", "-b:a", "128k", "-ac", "2",
           "-movflags", "+faststart",
@@ -758,7 +762,7 @@ exports.makeEditReady = onDocumentWritten(
         [
           "-i", "pipe:0",
           "-vf", "format=yuv420p",
-          "-r", "30",
+          "-r", String(TARGET_FPS),
           "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
           "-af", "aresample=async=1000:first_pts=0",
           "-c:a", "aac", "-b:a", "192k", "-ac", "2",
