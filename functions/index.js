@@ -719,3 +719,69 @@ exports.makePreview = onDocumentUpdated(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Edit-ready export: browsers record variable frame rate, and while players
+// follow the per-frame timestamps, NLEs (Premiere) assume constant frame
+// rate — so audio slowly drifts against the picture on the timeline. On
+// request (editRequested on the recording doc) this re-encodes the composed
+// original at source resolution to strict CFR 30 with resampled audio.
+// ultrafast keeps long takes inside the 540s ceiling; crf 18 keeps it
+// visually indistinguishable as an editing mezzanine.
+// ---------------------------------------------------------------------------
+
+exports.makeEditReady = onDocumentWritten(
+  {
+    document: "sessions/{sessionId}/recordings/{recId}",
+    region: "us-central1",
+    memory: "4GiB",
+    cpu: 8,
+    concurrency: 1,
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const after = event.data?.after?.data();
+    if (!after) return;
+    if (!after.editRequested || !after.composedPath) return;
+    // Only once: success (editPath) and failure (editError) both stop
+    // this re-firing; a retry clears editError alongside the request.
+    if (after.editPath || after.editError || after.audioOnly) return;
+
+    const { sessionId, recId } = event.params;
+    const bucket = getStorage().bucket(BUCKET);
+    const prefix = after.composedPath.slice(0, after.composedPath.lastIndexOf("/") + 1);
+    const editName = `${prefix}edit.mp4`;
+    const tmpPath = path.join(os.tmpdir(), `${recId}-edit.mp4`);
+
+    try {
+      await runFfmpegArgs(
+        [
+          "-i", "pipe:0",
+          "-vf", "format=yuv420p",
+          "-r", "30",
+          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+          "-af", "aresample=async=1000:first_pts=0",
+          "-c:a", "aac", "-b:a", "192k", "-ac", "2",
+          "-movflags", "+faststart",
+          tmpPath,
+        ],
+        bucket.file(after.composedPath).createReadStream(),
+      );
+      await bucket.upload(tmpPath, {
+        destination: editName,
+        metadata: { contentType: "video/mp4" },
+      });
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        editPath: editName,
+      });
+      console.log(`Edit-ready export done for ${sessionId}/${recId}: ${editName}`);
+    } catch (err) {
+      console.error(`Edit-ready export failed for ${sessionId}/${recId}:`, err);
+      await getFirestore().doc(`sessions/${sessionId}/recordings/${recId}`).update({
+        editError: String(err.message ?? err),
+      });
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  },
+);

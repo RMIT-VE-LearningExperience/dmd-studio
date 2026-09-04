@@ -47,6 +47,9 @@ type RecordingDoc = {
   composedPath: string | null;
   previewPath: string | null;
   audioPath: string | null;
+  editPath: string | null;
+  editRequested: boolean;
+  editError: string | null;
   transcript: string | null;
   transcriptStatus: "pending" | "done" | "error" | null;
   markers: { atMs: number }[];
@@ -636,6 +639,21 @@ function ComposedRecordingRow({
     }
   };
 
+  // Kicks the makeEditReady function; a retry clears the failure flag so
+  // the trigger fires again.
+  const requestEditReady = async () => {
+    setMenuOpen(false);
+    try {
+      await setDoc(
+        doc(db, "sessions", sessionId, "recordings", rec.id),
+        { editRequested: true, editError: null },
+        { merge: true },
+      );
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Couldn't request the edit-ready export.");
+    }
+  };
+
   const remove = async () => {
     const who = rec.displayName || rec.role;
     const sure = window.confirm(`Delete ${who}'s recording (take ${rec.take})? This can't be undone.`);
@@ -715,6 +733,42 @@ function ComposedRecordingRow({
                       <span className="block text-[11px] text-neutral-500">MP4 · smaller, quick to share</span>
                     </button>
                   )}
+                  {rec.editPath ? (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void downloadStoragePath(
+                          rec.editPath!,
+                          `${rec.displayName || rec.role}-take${rec.take}-edit.mp4`,
+                        );
+                      }}
+                      className="px-4 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      Edit-ready (constant frame rate)
+                      <span className="block text-[11px] text-neutral-500">
+                        MP4 · full quality, stays in sync in Premiere
+                      </span>
+                    </button>
+                  ) : rec.editRequested && !rec.editError ? (
+                    <span className="px-4 py-2 text-left text-xs text-neutral-500">
+                      Edit-ready export preparing…
+                      <span className="block text-[11px] text-neutral-600">
+                        a few minutes — it&rsquo;ll appear here
+                      </span>
+                    </span>
+                  ) : canDelete ? (
+                    <button
+                      role="menuitem"
+                      onClick={() => void requestEditReady()}
+                      className="px-4 py-2 text-left text-xs text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      {rec.editError ? "Retry edit-ready export" : "Prepare edit-ready export"}
+                      <span className="block text-[11px] text-neutral-500">
+                        for editors — the original is variable frame rate and drifts in Premiere
+                      </span>
+                    </button>
+                  ) : null}
                   {rec.audioPath && (
                     <button
                       role="menuitem"
@@ -983,6 +1037,9 @@ export default function RecordingsPage({ params }: { params: Promise<{ id: strin
             composedPath: (data.composedPath as string) ?? null,
             previewPath: (data.previewPath as string) ?? null,
             audioPath: (data.audioPath as string) ?? null,
+            editPath: (data.editPath as string) ?? null,
+            editRequested: data.editRequested === true,
+            editError: (data.editError as string) ?? null,
             transcript: (data.transcript as string) ?? null,
             transcriptStatus: (data.transcriptStatus as RecordingDoc["transcriptStatus"]) ?? null,
             markers: ((data.markers as { atMs: number }[] | undefined) ?? []).slice().sort((a, b) => a.atMs - b.atMs),

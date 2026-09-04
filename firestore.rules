@@ -199,7 +199,7 @@ service cloud.firestore {
         // The host may also update — that's how a dead participant's
         // partial track gets finalized (uploadState flipped to "complete").
         allow read: if isSessionHost() || isAdmitted() || isAdmin();
-        allow create, update: if isSessionHost()
+        allow create, update: if isSessionHost() || isAdmin()
           || (request.auth != null
               && recId.matches(request.auth.uid + '(_screen)?_take[0-9]+'));
         allow delete: if isSessionHost() || isAdmin()
